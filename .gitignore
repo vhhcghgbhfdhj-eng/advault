@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+credentials.json
+secrets.json
+
+# Local database and media (kept on this machine only)
+backend/data.json
+backend/uploads/
+backend/uploads/**
+
+# Local backups
+**/ADVAULT_TT_backup*/
+**/*backup*.json
+**/*.backup
+
+# Logs and OS junk
+logs/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor / tooling
+.cursor/
+.vscode/
+*.swp
+*.swo
+
+# Frontend build cache
+frontend/dist/
+frontend/.vite/
+
+# Temporary test scripts
+*conn-test*
+*supabase-migrate*
+*verify-loaddb*
+tmp/
+temp/
+.cache/

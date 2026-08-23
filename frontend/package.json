@@ -1,0 +1,15 @@
+{
+  "name": "advault-tt-frontend",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "vite --port 5174 --strictPort",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "vite": "latest",
+    "react": "latest",
+    "react-dom": "latest"
+  },
+  "devDependencies": {}
+}
