@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./style.css";
 import { applyDocumentLang, displayVipName, formatDate, readLang, saveLang, translate } from "./i18n.js";
 
-const API = "http://127.0.0.1:3000";
+const API = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://advault-elsg.onrender.com" : "http://127.0.0.1:3000");
 const TOKEN_KEY = "advault_token";
 const ACCOUNT_KEY = "advault_user_id";
 const EMAIL_KEY = "advault_user_email";
