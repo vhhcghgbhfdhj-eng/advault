@@ -886,16 +886,42 @@ function normalizeDb(data) {
   return data;
 }
 
+function logBootDb(source, data, extra = {}) {
+  const users = Array.isArray(data?.users) ? data.users : [];
+  const adminFound = users.some((item) => String(item.email || "").trim().toLowerCase() === "admin@advault.tt");
+  console.log("BOOT_DB", {
+    "SUPABASE_URL": String(process.env.SUPABASE_URL || "").trim() ? "yes" : "no",
+    "SUPABASE_SECRET_KEY": String(process.env.SUPABASE_SECRET_KEY || "").trim() ? "yes" : "no",
+    client: extra.client ? "yes" : "no",
+    source,
+    fallback: extra.fallback || "none",
+    users: users.length,
+    admin: adminFound ? "yes" : "no"
+  });
+}
+
 async function loadDb() {
   const client = getSupabaseClient();
-  if (!client) return normalizeDb(loadLocalDb());
+  if (!client) {
+    const local = normalizeDb(loadLocalDb());
+    logBootDb("local", local, { client: false, fallback: "missing_env" });
+    return local;
+  }
   const { data, error } = await client.from("app_state").select("payload").eq("id", APP_STATE_ID).maybeSingle();
   if (error) {
     console.error("تعذر قراءة app_state من Supabase:", error.message);
-    return normalizeDb(loadLocalDb());
+    const local = normalizeDb(loadLocalDb());
+    logBootDb("local", local, { client: true, fallback: "read_error" });
+    return local;
   }
-  if (data?.payload && typeof data.payload === "object") return normalizeDb(data.payload);
-  return normalizeDb(loadLocalDb());
+  if (data?.payload && typeof data.payload === "object") {
+    const remote = normalizeDb(data.payload);
+    logBootDb("supabase", remote, { client: true, fallback: "none" });
+    return remote;
+  }
+  const local = normalizeDb(loadLocalDb());
+  logBootDb("local", local, { client: true, fallback: "empty_payload" });
+  return local;
 }
 
 function saveDb() {
