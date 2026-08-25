@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
-import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
@@ -9,9 +9,31 @@ import { fileURLToPath } from "url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_PATH = join(__dirname, "data.json");
 const UPLOADS_DIR = join(__dirname, "uploads");
+
+function loadLocalEnvFile() {
+  const envPath = join(__dirname, ".env");
+  if (!existsSync(envPath)) return;
+  const lines = readFileSync(envPath, "utf8").split(/\r?\n/);
+  lines.forEach((line) => {
+    const trimmed = String(line || "").trim();
+    if (!trimmed || trimmed.startsWith("#")) return;
+    const idx = trimmed.indexOf("=");
+    if (idx < 1) return;
+    const name = trimmed.slice(0, idx).trim();
+    let value = trimmed.slice(idx + 1).trim();
+    if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (!name || process.env[name]) return;
+    process.env[name] = value;
+  });
+}
+
+loadLocalEnvFile();
 if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
 const PORT = process.env.PORT || 3000;
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const RESET_TTL_MS = 30 * 60 * 1000;
 const MAX_REFERRALS_PER_IP_PER_DAY = 5;
 
 const DEFAULT_REFERRAL_SETTINGS = {
@@ -53,9 +75,94 @@ function hashPassword(password, salt = randomBytes(16).toString("hex")) {
 }
 
 function verifyPassword(password, salt, passwordHash) {
-  const hashed = scryptSync(password, salt, 64);
-  const stored = Buffer.from(passwordHash, "hex");
-  return hashed.length === stored.length && timingSafeEqual(hashed, stored);
+  try {
+    if (!password || !salt || !passwordHash) return false;
+    const hashed = scryptSync(password, String(salt), 64);
+    const stored = Buffer.from(String(passwordHash), "hex");
+    if (stored.length === 0 || hashed.length !== stored.length) return false;
+    return timingSafeEqual(hashed, stored);
+  } catch {
+    return false;
+  }
+}
+
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function findUserByEmail(email) {
+  const needle = normalizeEmail(email);
+  return (db.users || []).find((item) => normalizeEmail(item.email) === needle) || null;
+}
+
+function hashResetToken(token) {
+  return createHash("sha256").update(String(token || "")).digest("hex");
+}
+
+function sameResetHash(a, b) {
+  const left = Buffer.from(String(a || ""), "hex");
+  const right = Buffer.from(String(b || ""), "hex");
+  return left.length > 0 && left.length === right.length && timingSafeEqual(left, right);
+}
+
+function pruneResetTokens() {
+  const now = Date.now();
+  db.passwordResetTokens = (db.passwordResetTokens || []).filter((item) => (
+    !item.used && Number(item.expiresAt) > now
+  ));
+}
+
+function configuredFrontendUrl() {
+  return String(process.env.PUBLIC_FRONTEND_URL || "").trim().replace(/\/$/, "");
+}
+
+function isLocalHostOrigin(value) {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return /localhost|127\.0\.0\.1|\[::1\]/i.test(String(value || ""));
+  }
+}
+
+function allowLocalResetLinks() {
+  return !process.env.RENDER && String(process.env.NODE_ENV || "").toLowerCase() !== "production";
+}
+
+function resetPublicUrl(req) {
+  const configured = configuredFrontendUrl();
+  if (configured && (allowLocalResetLinks() || !isLocalHostOrigin(configured))) return configured;
+  const origin = String(req.headers.origin || "").trim().replace(/\/$/, "");
+  if (origin && (allowLocalResetLinks() || !isLocalHostOrigin(origin))) return origin;
+  return "https://advault-frontend.onrender.com";
+}
+
+function encodeResetPathPayload(email, rawToken) {
+  return Buffer.from(`${email}\0${rawToken}`, "utf8").toString("base64url");
+}
+
+function mailFromAddress() {
+  return String(process.env.MAIL_FROM || "").trim() || "ADVAULT TT <onboarding@resend.dev>";
+}
+
+async function sendPasswordResetEmail({ to, resetUrl }) {
+  const key = String(process.env.RESEND_API_KEY || "").trim();
+  if (!key) return { ok: false, error: "missing_key" };
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      from: mailFromAddress(),
+      to: [to],
+      subject: "استعادة كلمة مرور ADVAULT TT",
+      html: `<p>تم طلب استعادة كلمة المرور لحسابك.</p><p>استخدم هذا الرابط خلال 30 دقيقة، ولمرة واحدة فقط:</p><p><a href="${resetUrl}">تعيين كلمة مرور جديدة</a></p><p>إذا لم تطلب ذلك فتجاهل الرسالة.</p>`
+    })
+  });
+  if (!res.ok) return { ok: false, error: "send_failed" };
+  return { ok: true };
 }
 
 function nowIso() {
@@ -66,7 +173,7 @@ function audit(event, fields = {}) {
   const safe = {};
   Object.entries(fields).forEach(([key, value]) => {
     const k = String(key).toLowerCase();
-    if (k.includes("password") || k.includes("token") || k.includes("hash") || k.includes("salt")) return;
+    if (k.includes("password") || k.includes("token") || k.includes("hash") || k.includes("salt") || k === "code") return;
     if (k.includes("address") || k.includes("txhash") || k.includes("hash")) {
       const text = String(value || "");
       safe[key] = text.length > 8 ? `${text.slice(0, 4)}…${text.slice(-4)}` : "[redacted]";
@@ -692,7 +799,10 @@ const APP_STATE_ID = "main";
 const UPLOADS_BUCKET = "uploads";
 let supabaseClient = null;
 
+const REMOTE_STORAGE_PAUSED = String(process.env.REMOTE_STORAGE_PAUSED || "").trim().toLowerCase() === "true";
+
 function remoteStorageConfigured() {
+  if (REMOTE_STORAGE_PAUSED) return false;
   return Boolean(String(process.env.SUPABASE_URL || "").trim() && String(process.env.SUPABASE_SECRET_KEY || "").trim());
 }
 
@@ -807,6 +917,7 @@ function seed() {
   return {
     users: [],
     sessions: [],
+    passwordResetTokens: [],
     transactions: [],
     tasks: [
       { id: 1, title: "مشاهدة إعلان", description: "شاهد إعلاناً كاملاً واحصل على المكافأة", reward: 1, type: "ad", vipMin: 0, dailyLimit: 60, active: true },
@@ -867,6 +978,7 @@ function normalizeDb(data) {
   data.vipRequests = data.vipRequests || [];
   data.referrals = data.referrals || [];
   data.sessions = data.sessions || [];
+  data.passwordResetTokens = data.passwordResetTokens || [];
   data.transactions = data.transactions || [];
   data.completions = data.completions || [];
   data.withdrawRequests = data.withdrawRequests || [];
@@ -886,42 +998,16 @@ function normalizeDb(data) {
   return data;
 }
 
-function logBootDb(source, data, extra = {}) {
-  const users = Array.isArray(data?.users) ? data.users : [];
-  const adminFound = users.some((item) => String(item.email || "").trim().toLowerCase() === "admin@advault.tt");
-  console.log("BOOT_DB", {
-    "SUPABASE_URL": String(process.env.SUPABASE_URL || "").trim() ? "yes" : "no",
-    "SUPABASE_SECRET_KEY": String(process.env.SUPABASE_SECRET_KEY || "").trim() ? "yes" : "no",
-    client: extra.client ? "yes" : "no",
-    source,
-    fallback: extra.fallback || "none",
-    users: users.length,
-    admin: adminFound ? "yes" : "no"
-  });
-}
-
 async function loadDb() {
   const client = getSupabaseClient();
-  if (!client) {
-    const local = normalizeDb(loadLocalDb());
-    logBootDb("local", local, { client: false, fallback: "missing_env" });
-    return local;
-  }
+  if (!client) return normalizeDb(loadLocalDb());
   const { data, error } = await client.from("app_state").select("payload").eq("id", APP_STATE_ID).maybeSingle();
   if (error) {
     console.error("تعذر قراءة app_state من Supabase:", error.message);
-    const local = normalizeDb(loadLocalDb());
-    logBootDb("local", local, { client: true, fallback: "read_error" });
-    return local;
+    return normalizeDb(loadLocalDb());
   }
-  if (data?.payload && typeof data.payload === "object") {
-    const remote = normalizeDb(data.payload);
-    logBootDb("supabase", remote, { client: true, fallback: "none" });
-    return remote;
-  }
-  const local = normalizeDb(loadLocalDb());
-  logBootDb("local", local, { client: true, fallback: "empty_payload" });
-  return local;
+  if (data?.payload && typeof data.payload === "object") return normalizeDb(data.payload);
+  return normalizeDb(loadLocalDb());
 }
 
 function saveDb() {
@@ -1225,7 +1311,7 @@ function registerHandler(req, res) {
   if (name.length < 2) return res.status(400).json({ error: "الاسم قصير جداً" });
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "البريد غير صالح" });
   if (password.length < 6) return res.status(400).json({ error: "كلمة المرور يجب أن تكون 6 أحرف على الأقل" });
-  if (db.users.some((item) => item.email === email)) return res.status(409).json({ error: "البريد مستخدم مسبقاً" });
+  if (findUserByEmail(email)) return res.status(409).json({ error: "البريد مستخدم مسبقاً" });
 
   let inviter = null;
   const ip = clientIp(req);
@@ -1363,9 +1449,9 @@ app.post("/register", registerHandler);
 
 app.post("/api/auth/login", (req, res) => {
   try {
-  const email = String(req.body?.email || "").trim().toLowerCase();
+  const email = normalizeEmail(req.body?.email);
   const password = String(req.body?.password || "");
-  const user = db.users.find((item) => item.email === email);
+  const user = findUserByEmail(email);
   if (!user || !verifyPassword(password, user.salt, user.passwordHash)) {
     return sendJson(res, 401, { error: "بيانات الدخول غير صحيحة" });
   }
@@ -1395,6 +1481,80 @@ app.post("/api/auth/logout", (req, res) => {
   saveDb();
   audit("logout", { userId, sessionEnded: Boolean(session) });
   res.json({ ok: true });
+});
+
+app.post("/api/auth/forgot-password", async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return sendJson(res, 400, { error: "البريد غير صالح" });
+    }
+    const user = findUserByEmail(email);
+    if (!user) {
+      audit("password_reset_unknown_email", {});
+      return sendJson(res, 404, { error: "هذا البريد غير مسجل" });
+    }
+    const rawToken = randomBytes(32).toString("hex");
+    const resetUrl = `${resetPublicUrl(req)}/reset/${encodeResetPathPayload(email, rawToken)}`;
+    const sent = await sendPasswordResetEmail({ to: email, resetUrl });
+    if (!sent.ok) {
+      audit("password_reset_send_failed", { userId: Number(user.id) });
+      return sendJson(res, 503, { registered: true, error: "تعذر إرسال رسالة الاستعادة. حاول لاحقاً" });
+    }
+    pruneResetTokens();
+    db.passwordResetTokens = (db.passwordResetTokens || []).filter((item) => normalizeEmail(item.email) !== email);
+    db.passwordResetTokens.push({
+      email,
+      tokenHash: hashResetToken(rawToken),
+      expiresAt: Date.now() + RESET_TTL_MS,
+      used: false
+    });
+    saveDb();
+    audit("password_reset_sent", { userId: Number(user.id) });
+    return sendJson(res, 200, {
+      registered: true,
+      message: "هذا البريد مسجل. تم إرسال رابط استعادة كلمة المرور إلى بريدك."
+    });
+  } catch {
+    return sendJson(res, 500, { error: "تعذر طلب استعادة كلمة المرور" });
+  }
+});
+
+app.post("/api/auth/reset-password", (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+    const rawToken = String(req.body?.token || req.body?.code || "").trim();
+    const newPassword = String(req.body?.newPassword || "");
+    const confirmPassword = String(req.body?.confirmPassword || "");
+    if (!email || !rawToken) return sendJson(res, 400, { error: "رمز الاستعادة غير صالح أو منتهٍ" });
+    if (newPassword !== confirmPassword) {
+      return sendJson(res, 400, { error: "كلمة المرور الجديدة وتأكيدها غير متطابقين" });
+    }
+    if (newPassword.length < 6) {
+      return sendJson(res, 400, { error: "كلمة المرور يجب أن تكون 6 أحرف على الأقل" });
+    }
+    const user = findUserByEmail(email);
+    if (!user) return sendJson(res, 400, { error: "رمز الاستعادة غير صالح أو منتهٍ" });
+    pruneResetTokens();
+    const tokenHash = hashResetToken(rawToken);
+    const record = (db.passwordResetTokens || []).find((item) => (
+      normalizeEmail(item.email) === email
+      && !item.used
+      && Number(item.expiresAt) > Date.now()
+      && sameResetHash(item.tokenHash, tokenHash)
+    ));
+    if (!record) return sendJson(res, 400, { error: "رمز الاستعادة غير صالح أو منتهٍ" });
+    const hashed = hashPassword(newPassword);
+    user.passwordHash = hashed.passwordHash;
+    user.salt = hashed.salt;
+    record.used = true;
+    db.passwordResetTokens = (db.passwordResetTokens || []).filter((item) => !item.used);
+    saveDb();
+    audit("password_reset_completed", { userId: Number(user.id) });
+    return sendJson(res, 200, { ok: true, message: "تم تعيين كلمة المرور الجديدة. يمكنك تسجيل الدخول." });
+  } catch {
+    return sendJson(res, 500, { error: "تعذر تعيين كلمة المرور الجديدة" });
+  }
 });
 
 app.post("/api/auth/change-password", authMiddleware, identityGuard, (req, res) => {
@@ -2290,7 +2450,6 @@ app.use((err, req, res, next) => {
 
 async function startServer() {
   prepareDb(await loadDb());
-  await saveDb();
   const server = app.listen(PORT, "0.0.0.0");
   server.on("listening", () => {
     console.log(`ADVAULT TT backend running on port ${PORT}`);

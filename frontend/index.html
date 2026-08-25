@@ -10,6 +10,18 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      (function () {
+        try {
+          var path = String(location.pathname || "");
+          var hash = String(location.hash || "");
+          var rest = String(location.search || "") + hash;
+          if (path.indexOf("/reset") === 0 || hash.indexOf("reset") !== -1 || /(?:^|[?&#])reset=/.test(rest) || /(?:^|[?&#])code=/.test(rest)) {
+            document.documentElement.setAttribute("data-advault-reset", "1");
+          }
+        } catch (e) {}
+      })();
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

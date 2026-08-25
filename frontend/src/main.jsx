@@ -371,6 +371,72 @@ function BootScreen() {
   );
 }
 
+function resetSearchParams() {
+  const href = String(window.location.href || "").replace(/&amp;/gi, "&");
+  let search = "";
+  let hashQuery = "";
+  try {
+    const url = new URL(href);
+    search = String(url.search || "").replace(/^\?/, "");
+    hashQuery = String(url.hash || "").replace(/^#\/?/, "").replace(/^\?/, "");
+  } catch {
+    search = String(window.location.search || "").replace(/^\?/, "");
+    hashQuery = String(window.location.hash || "").replace(/^#\/?/, "").replace(/^\?/, "");
+  }
+  return new URLSearchParams([search, hashQuery].filter(Boolean).join("&").replace(/&amp;/gi, "&"));
+}
+
+function resetParam(params, name) {
+  return String(params.get(name) || params.get(`amp;${name}`) || "").trim();
+}
+
+function decodeResetPathPayload(segment) {
+  try {
+    const cleaned = String(segment || "").trim();
+    if (!cleaned) return { email: "", code: "" };
+    const padded = cleaned.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (cleaned.length % 4 || 4)) % 4);
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+    const text = new TextDecoder().decode(bytes);
+    const split = text.indexOf("\0");
+    if (split < 0) return { email: "", code: "" };
+    return { email: text.slice(0, split).trim(), code: text.slice(split + 1).trim() };
+  } catch {
+    return { email: "", code: "" };
+  }
+}
+
+function resetPathname() {
+  const path = String(window.location.pathname || "").replace(/\/+$/, "") || "/";
+  if (path === "/reset" || path.startsWith("/reset/")) return path;
+  const hash = String(window.location.hash || "").replace(/^#/, "");
+  const hashPath = (hash.startsWith("/") ? hash : `/${hash}`).split("?")[0].replace(/\/+$/, "") || "/";
+  if (hashPath === "/reset" || hashPath.startsWith("/reset/")) return hashPath;
+  return path;
+}
+
+function readResetPathPayload() {
+  const match = resetPathname().match(/^\/reset\/([^/]+)$/);
+  return match ? decodeResetPathPayload(decodeURIComponent(match[1])) : { email: "", code: "" };
+}
+
+function isPasswordResetRoute() {
+  if (document.documentElement.getAttribute("data-advault-reset") === "1") return true;
+  const path = resetPathname();
+  if (path === "/reset" || path.startsWith("/reset/")) return true;
+  const params = resetSearchParams();
+  return Boolean(resetParam(params, "reset") || resetParam(params, "code"));
+}
+
+function readPasswordResetParams() {
+  const fromPath = readResetPathPayload();
+  const params = resetSearchParams();
+  return {
+    email: fromPath.email || resetParam(params, "email"),
+    code: fromPath.code || resetParam(params, "code")
+  };
+}
+
 function App() {
   const { t, lang } = useLang();
   const [token, setToken] = useState(localStorage.getItem(TOKEN_KEY) || "");
@@ -449,6 +515,10 @@ function App() {
   }
 
   useEffect(() => {
+    if (isPasswordResetRoute()) {
+      setAuthReady(true);
+      return;
+    }
     if (!token) {
       setUser(null);
       setAuthReady(true);
@@ -513,6 +583,10 @@ function App() {
     setPage(nextPage);
   }
 
+  if (isPasswordResetRoute()) {
+    return <Auth onSuccess={loginSuccess} />;
+  }
+
   if (!authReady) {
     return (
       <BootScreen />
@@ -565,15 +639,29 @@ function App() {
 
 function Auth({ onSuccess }) {
   const { t, lang } = useLang();
-  const [mode, setMode] = useState("register");
+  const initialReset = isPasswordResetRoute() ? readPasswordResetParams() : { email: "", code: "" };
+  const [mode, setMode] = useState(isPasswordResetRoute() ? "reset" : "register");
   const [form, setForm] = useState({
     name: "",
-    email: "",
+    email: initialReset.email,
     password: "",
     confirmPassword: "",
-    referralCode: ""
+    referralCode: "",
+    resetCode: initialReset.code
   });
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    if (!isPasswordResetRoute()) return;
+    const next = readPasswordResetParams();
+    setMode("reset");
+    setForm((current) => ({
+      ...current,
+      email: next.email || current.email,
+      resetCode: next.code || current.resetCode
+    }));
+  }, []);
 
   function change(e) {
     setForm({ ...form, [e.target.name === "advaultEmail" ? "email" : e.target.name]: e.target.value });
@@ -582,7 +670,53 @@ function Auth({ onSuccess }) {
   async function submit(e) {
     e.preventDefault();
     setError("");
+    setNotice("");
     const email = String(form.email || "").trim().toLowerCase();
+    if (mode === "forgot") {
+      try {
+        const res = await fetch(`${API}/api/auth/forgot-password`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email })
+        });
+        const data = await readJson(res);
+        if (!res.ok) throw new Error(data.error || t("تعذر الدخول"));
+        setNotice(data.message || t("هذا البريد مسجل. تم إرسال رابط استعادة كلمة المرور إلى بريدك."));
+        setMode("reset");
+      } catch (err) {
+        setError(err.message);
+      }
+      return;
+    }
+    if (mode === "reset") {
+      if (form.password !== form.confirmPassword) {
+        setError(t("تأكيد كلمة المرور غير مطابق"));
+        return;
+      }
+      try {
+        const res = await fetch(`${API}/api/auth/reset-password`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email,
+            token: form.resetCode,
+            code: form.resetCode,
+            newPassword: form.password,
+            confirmPassword: form.confirmPassword
+          })
+        });
+        const data = await readJson(res);
+        if (!res.ok) throw new Error(data.error || t("تعذر الدخول"));
+        setNotice(data.message || t("تم تعيين كلمة المرور الجديدة. يمكنك تسجيل الدخول."));
+        setMode("login");
+        setForm({ ...form, password: "", confirmPassword: "", resetCode: "" });
+        window.history.replaceState({}, "", "/");
+        document.documentElement.removeAttribute("data-advault-reset");
+      } catch (err) {
+        setError(err.message);
+      }
+      return;
+    }
     if (mode === "register" && form.password !== form.confirmPassword) {
       setError(t("تأكيد كلمة المرور غير مطابق"));
       return;
@@ -615,17 +749,35 @@ function Auth({ onSuccess }) {
     }
   }
 
+  const title = mode === "login"
+    ? t("تسجيل الدخول")
+    : mode === "forgot"
+      ? t("استعادة كلمة المرور")
+      : mode === "reset"
+        ? t("تعيين كلمة المرور")
+        : t("إنشاء حساب");
+  const subtitle = mode === "login"
+    ? t("أدخل بيانات حسابك للوصول إلى محفظتك واشتراكك.")
+    : mode === "forgot"
+      ? t("أدخل بريدك لإرسال رابط استعادة كلمة المرور.")
+      : mode === "reset"
+        ? t("أدخل الرمز المرسل إلى بريدك ثم عيّن كلمة مرور جديدة.")
+        : t("الحساب الجديد يبدأ برصيد صفر وبدون VIP أو دعوات.");
+
   return (
     <div className="auth-screen" dir={lang === "en" ? "ltr" : "rtl"}>
       <div className="auth-box card">
         <div className="brand">ADVAULT <span>TT</span></div>
-        <h1>{mode === "login" ? t("تسجيل الدخول") : t("إنشاء حساب")}</h1>
-        <p className="muted">{mode === "login" ? t("أدخل بيانات حسابك للوصول إلى محفظتك واشتراكك.") : t("الحساب الجديد يبدأ برصيد صفر وبدون VIP أو دعوات.")}</p>
-        <div className="nav">
-          <button type="button" className={mode === "login" ? "active" : ""} onClick={() => { setMode("login"); setError(""); }}>{t("تسجيل الدخول")}</button>
-          <button type="button" className={mode === "register" ? "active" : ""} onClick={() => { setMode("register"); setError(""); }}>{t("إنشاء حساب")}</button>
-        </div>
+        <h1>{title}</h1>
+        <p className="muted">{subtitle}</p>
+        {mode !== "forgot" && mode !== "reset" && (
+          <div className="nav">
+            <button type="button" className={mode === "login" ? "active" : ""} onClick={() => { setMode("login"); setError(""); setNotice(""); }}>{t("تسجيل الدخول")}</button>
+            <button type="button" className={mode === "register" ? "active" : ""} onClick={() => { setMode("register"); setError(""); setNotice(""); }}>{t("إنشاء حساب")}</button>
+          </div>
+        )}
         {error && <div className="alert">{t(error)}</div>}
+        {notice && <div className="success">{t(notice)}</div>}
         <form onSubmit={submit} autoComplete="off">
           {mode === "register" && (
             <>
@@ -635,20 +787,42 @@ function Auth({ onSuccess }) {
           )}
           <label>{t("البريد")}</label>
           <input name="advaultEmail" type="email" value={form.email} onChange={change} required autoComplete="off" />
-          <label>{t("كلمة المرور")}</label>
-          <input name="password" type="password" value={form.password} onChange={change} required minLength={6} autoComplete={mode === "login" ? "current-password" : "new-password"} />
-          {mode === "register" && (
+          {mode === "reset" && (
+            <>
+              <label>{t("رمز الاستعادة")}</label>
+              <input name="resetCode" value={form.resetCode} onChange={change} required autoComplete="off" />
+            </>
+          )}
+          {(mode === "login" || mode === "register" || mode === "reset") && (
+            <>
+              <label>{mode === "reset" ? t("كلمة المرور الجديدة") : t("كلمة المرور")}</label>
+              <input name="password" type="password" value={form.password} onChange={change} required minLength={6} autoComplete={mode === "login" ? "current-password" : "new-password"} />
+            </>
+          )}
+          {(mode === "register" || mode === "reset") && (
             <>
               <label>{t("تأكيد كلمة المرور")}</label>
               <input name="confirmPassword" type="password" value={form.confirmPassword} onChange={change} required minLength={6} autoComplete="new-password" />
+            </>
+          )}
+          {mode === "register" && (
+            <>
               <label>{t("كود الدعوة (اختياري)")}</label>
               <input name="referralCode" value={form.referralCode} onChange={change} />
             </>
           )}
           <div className="row">
-            <button className="primary" type="submit">{mode === "login" ? t("دخول") : t("إنشاء الحساب")}</button>
+            <button className="primary" type="submit">
+              {mode === "login" ? t("دخول") : mode === "forgot" ? t("إرسال رابط الاستعادة") : mode === "reset" ? t("تعيين كلمة المرور") : t("إنشاء الحساب")}
+            </button>
           </div>
         </form>
+        {mode === "login" && (
+          <button type="button" className="auth-forgot" onClick={() => { setMode("forgot"); setError(""); setNotice(""); setForm({ ...form, password: "" }); }}>{t("نسيت كلمة المرور؟")}</button>
+        )}
+        {(mode === "forgot" || mode === "reset") && (
+          <button type="button" className="auth-forgot" onClick={() => { setMode("login"); setError(""); setNotice(""); }}>{t("العودة لتسجيل الدخول")}</button>
+        )}
       </div>
     </div>
   );
