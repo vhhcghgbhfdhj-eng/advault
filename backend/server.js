@@ -1495,7 +1495,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
       return sendJson(res, 404, { error: "هذا البريد غير مسجل" });
     }
     const rawToken = randomBytes(32).toString("hex");
-    const resetUrl = `${resetPublicUrl(req)}/reset/${encodeResetPathPayload(email, rawToken)}`;
+    const resetUrl = `${resetPublicUrl(req)}/#/reset/${encodeResetPathPayload(email, rawToken)}`;
     const sent = await sendPasswordResetEmail({ to: email, resetUrl });
     if (!sent.ok) {
       audit("password_reset_send_failed", { userId: Number(user.id) });
