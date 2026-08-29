@@ -93,8 +93,8 @@ if (args.has("--production") && args.has("--local-only")) {
 
 if (args.has("--production")) {
   const envFile = loadBackendDotEnv();
-  const supabaseUrl = String(envFile.SUPABASE_URL || "").trim();
-  const supabaseKey = String(envFile.SUPABASE_SECRET_KEY || "").trim();
+  const supabaseUrl = String(process.env.SUPABASE_URL || envFile.SUPABASE_URL || "").trim();
+  const supabaseKey = String(process.env.SUPABASE_SECRET_KEY || envFile.SUPABASE_SECRET_KEY || "").trim();
   if (!supabaseUrl || !supabaseKey) {
     console.error("SUPABASE_ENV_MISSING");
     process.exit(1);
