@@ -1007,6 +1007,43 @@ button.admin-req-hit {
   vertical-align: middle;
 }
 
+.admin-reset-box {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.admin-reset-box textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
+}
+
+.admin-user-reset {
+  margin-top: 4px;
+}
+
+.admin-user-list-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.admin-recovery-box {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.admin-recovery-code {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.04em;
+}
+
 .admin-mini-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

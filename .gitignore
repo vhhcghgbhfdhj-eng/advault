@@ -10,6 +10,7 @@ node_modules/
 *.p12
 credentials.json
 secrets.json
+backend/.admin-new-email
 
 # Local database and media (kept on this machine only)
 backend/data.json

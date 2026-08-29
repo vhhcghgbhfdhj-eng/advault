@@ -3,11 +3,15 @@ import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
+import { dirname, isAbsolute, join } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_PATH = join(__dirname, "data.json");
+const DB_PATH = (() => {
+  const override = String(process.env.ADVAULT_DB_PATH || "").trim();
+  if (!override) return join(__dirname, "data.json");
+  return isAbsolute(override) ? override : join(__dirname, override);
+})();
 const UPLOADS_DIR = join(__dirname, "uploads");
 
 function loadLocalEnvFile() {
@@ -34,6 +38,7 @@ if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
 const PORT = process.env.PORT || 3000;
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RESET_TTL_MS = 30 * 60 * 1000;
+const ADMIN_RESET_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_REFERRALS_PER_IP_PER_DAY = 5;
 
 const DEFAULT_REFERRAL_SETTINGS = {
@@ -112,6 +117,90 @@ function pruneResetTokens() {
   ));
 }
 
+const ADMIN_RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const ADMIN_RECOVERY_CODE_LEN = 32;
+const ADMIN_RECOVERY_MAX_FAILS = 5;
+const ADMIN_RECOVERY_IP_MAX_FAILS = 20;
+const ADMIN_RECOVERY_LOCK_MS = 15 * 60 * 1000;
+const ADMIN_RECOVERY_DUMMY_HASH = createHash("sha256").update("advault-admin-recovery-dummy").digest("hex");
+const adminRecoveryAttempts = new Map();
+
+function normalizeAdminRecoveryCode(value) {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function formatAdminRecoveryCode(value) {
+  const raw = normalizeAdminRecoveryCode(value);
+  return raw.match(/.{1,4}/g)?.join("-") || raw;
+}
+
+function generateAdminRecoveryCode() {
+  const bytes = randomBytes(ADMIN_RECOVERY_CODE_LEN);
+  let out = "";
+  for (let i = 0; i < ADMIN_RECOVERY_CODE_LEN; i += 1) {
+    out += ADMIN_RECOVERY_ALPHABET[bytes[i] % ADMIN_RECOVERY_ALPHABET.length];
+  }
+  return formatAdminRecoveryCode(out);
+}
+
+function hashAdminRecoveryCode(value) {
+  return createHash("sha256").update(normalizeAdminRecoveryCode(value)).digest("hex");
+}
+
+function adminRecoveryLockKey(ip, email) {
+  return `${String(ip || "").trim()}|${normalizeEmail(email)}`;
+}
+
+function readAdminRecoveryAttempt(key) {
+  const now = Date.now();
+  const row = adminRecoveryAttempts.get(key);
+  if (!row) return { fails: 0, lockedUntil: 0 };
+  if (Number(row.lockedUntil) > now) return row;
+  if (Number(row.windowStart) && now - Number(row.windowStart) > ADMIN_RECOVERY_LOCK_MS) {
+    adminRecoveryAttempts.delete(key);
+    return { fails: 0, lockedUntil: 0 };
+  }
+  return row;
+}
+
+function adminRecoveryIsLocked(req, email) {
+  const ip = clientIp(req);
+  const ipRow = readAdminRecoveryAttempt(`ip|${ip}`);
+  const emailRow = readAdminRecoveryAttempt(adminRecoveryLockKey(ip, email));
+  const now = Date.now();
+  return Number(ipRow.lockedUntil) > now || Number(emailRow.lockedUntil) > now;
+}
+
+function rememberAdminRecoveryFailure(req, email) {
+  const ip = clientIp(req);
+  const now = Date.now();
+  function bump(key, maxFails) {
+    const row = readAdminRecoveryAttempt(key);
+    const fails = Number(row.fails || 0) + 1;
+    const lockedUntil = fails >= maxFails ? now + ADMIN_RECOVERY_LOCK_MS : 0;
+    adminRecoveryAttempts.set(key, {
+      fails,
+      lockedUntil,
+      windowStart: Number(row.windowStart) || now
+    });
+    return lockedUntil > now;
+  }
+  const locked = bump(adminRecoveryLockKey(ip, email), ADMIN_RECOVERY_MAX_FAILS);
+  bump(`ip|${ip}`, ADMIN_RECOVERY_IP_MAX_FAILS);
+  return locked;
+}
+
+function clearAdminRecoveryFailures(req, email) {
+  const ip = clientIp(req);
+  adminRecoveryAttempts.delete(adminRecoveryLockKey(ip, email));
+}
+
+function activeAdminRecovery(userId) {
+  return (db.adminRecovery || []).find((item) => (
+    sameId(item.userId, userId) && !item.used && item.codeHash
+  )) || null;
+}
+
 function configuredFrontendUrl() {
   return String(process.env.PUBLIC_FRONTEND_URL || "").trim().replace(/\/$/, "");
 }
@@ -173,7 +262,7 @@ function audit(event, fields = {}) {
   const safe = {};
   Object.entries(fields).forEach(([key, value]) => {
     const k = String(key).toLowerCase();
-    if (k.includes("password") || k.includes("token") || k.includes("hash") || k.includes("salt") || k === "code") return;
+    if (k.includes("password") || k.includes("token") || k.includes("hash") || k.includes("salt") || k === "code" || k.includes("reseturl") || k.includes("resetlink") || k.includes("recovery")) return;
     if (k.includes("address") || k.includes("txhash") || k.includes("hash")) {
       const text = String(value || "");
       safe[key] = text.length > 8 ? `${text.slice(0, 4)}…${text.slice(-4)}` : "[redacted]";
@@ -918,6 +1007,7 @@ function seed() {
     users: [],
     sessions: [],
     passwordResetTokens: [],
+    adminRecovery: [],
     transactions: [],
     tasks: [
       { id: 1, title: "مشاهدة إعلان", description: "شاهد إعلاناً كاملاً واحصل على المكافأة", reward: 1, type: "ad", vipMin: 0, dailyLimit: 60, active: true },
@@ -979,6 +1069,7 @@ function normalizeDb(data) {
   data.referrals = data.referrals || [];
   data.sessions = data.sessions || [];
   data.passwordResetTokens = data.passwordResetTokens || [];
+  data.adminRecovery = data.adminRecovery || [];
   data.transactions = data.transactions || [];
   data.completions = data.completions || [];
   data.withdrawRequests = data.withdrawRequests || [];
@@ -1505,9 +1596,11 @@ app.post("/api/auth/forgot-password", async (req, res) => {
     db.passwordResetTokens = (db.passwordResetTokens || []).filter((item) => normalizeEmail(item.email) !== email);
     db.passwordResetTokens.push({
       email,
+      userId: Number(user.id),
       tokenHash: hashResetToken(rawToken),
       expiresAt: Date.now() + RESET_TTL_MS,
-      used: false
+      used: false,
+      source: "email"
     });
     saveDb();
     audit("password_reset_sent", { userId: Number(user.id) });
@@ -1537,12 +1630,14 @@ app.post("/api/auth/reset-password", (req, res) => {
     if (!user) return sendJson(res, 400, { error: "رمز الاستعادة غير صالح أو منتهٍ" });
     pruneResetTokens();
     const tokenHash = hashResetToken(rawToken);
-    const record = (db.passwordResetTokens || []).find((item) => (
-      normalizeEmail(item.email) === email
-      && !item.used
-      && Number(item.expiresAt) > Date.now()
-      && sameResetHash(item.tokenHash, tokenHash)
-    ));
+    const record = (db.passwordResetTokens || []).find((item) => {
+      if (normalizeEmail(item.email) !== email || item.used) return false;
+      if (Number(item.expiresAt) <= Date.now()) return false;
+      if (!sameResetHash(item.tokenHash, tokenHash)) return false;
+      if (item.userId && !sameId(item.userId, user.id)) return false;
+      if (item.source === "admin" && !sameId(item.userId, user.id)) return false;
+      return true;
+    });
     if (!record) return sendJson(res, 400, { error: "رمز الاستعادة غير صالح أو منتهٍ" });
     const hashed = hashPassword(newPassword);
     user.passwordHash = hashed.passwordHash;
@@ -1592,6 +1687,100 @@ app.post("/api/auth/change-password", authMiddleware, identityGuard, (req, res) 
     return sendJson(res, 200, { ok: true });
   } catch {
     return sendJson(res, 500, { error: "تعذر تغيير كلمة المرور" });
+  }
+});
+
+app.get("/api/admin/account/recovery", authMiddleware, identityGuard, adminMiddleware, (req, res) => {
+  const record = activeAdminRecovery(req.user.id);
+  return sendJson(res, 200, {
+    configured: Boolean(record),
+    createdAt: record?.createdAt || null
+  });
+});
+
+app.post("/api/admin/account/recovery-code", authMiddleware, identityGuard, adminMiddleware, (req, res) => {
+  try {
+    const currentPassword = String(req.body?.currentPassword || "");
+    let currentOk = false;
+    try {
+      currentOk = verifyPassword(currentPassword, req.user.salt, req.user.passwordHash);
+    } catch {
+      currentOk = false;
+    }
+    if (!currentOk) return sendJson(res, 400, { error: "كلمة المرور الحالية غير صحيحة" });
+    const hadPrevious = Boolean(activeAdminRecovery(req.user.id));
+    const rawCode = generateAdminRecoveryCode();
+    const codeHash = hashAdminRecoveryCode(rawCode);
+    db.adminRecovery = (db.adminRecovery || []).filter((item) => !sameId(item.userId, req.user.id));
+    db.adminRecovery.push({
+      userId: Number(req.user.id),
+      codeHash,
+      createdAt: nowIso(),
+      used: false
+    });
+    saveDb();
+    audit("admin_recovery_code_issued", { adminId: Number(req.user.id), replacedPrevious: hadPrevious });
+    return sendJson(res, 200, {
+      ok: true,
+      configured: true,
+      replacedPrevious: hadPrevious,
+      recoveryCode: rawCode,
+      message: hadPrevious
+        ? "تم إلغاء الرمز السابق. احفظ الرمز الجديد الآن خارج التطبيق. لن يظهر مرة أخرى، ويُستخدم مرة واحدة فقط."
+        : "احفظ رمز استعادة الأدمن الآن خارج التطبيق. لن يظهر مرة أخرى، ويُستخدم مرة واحدة فقط."
+    });
+  } catch {
+    return sendJson(res, 500, { error: "تعذر إنشاء رمز استعادة الأدمن" });
+  }
+});
+
+app.post("/api/auth/admin-recovery", (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+    const rawCode = String(req.body?.recoveryCode || req.body?.code || "");
+    const newPassword = String(req.body?.newPassword || "");
+    const confirmPassword = String(req.body?.confirmPassword || "");
+    const genericFail = "تعذر استعادة حساب الأدمن";
+    if (!email || !normalizeAdminRecoveryCode(rawCode)) {
+      return sendJson(res, 400, { error: genericFail });
+    }
+    if (adminRecoveryIsLocked(req, email)) {
+      audit("admin_recovery_locked", {});
+      return sendJson(res, 429, { error: "تم تجاوز عدد المحاولات. حاول لاحقًا" });
+    }
+    if (newPassword !== confirmPassword) {
+      return sendJson(res, 400, { error: "كلمة المرور الجديدة وتأكيدها غير متطابقين" });
+    }
+    if (newPassword.length < 6) {
+      return sendJson(res, 400, { error: "كلمة المرور يجب أن تكون 6 أحرف على الأقل" });
+    }
+    const user = findUserByEmail(email);
+    const record = user && user.role === "admin" ? activeAdminRecovery(user.id) : null;
+    const incomingHash = hashAdminRecoveryCode(rawCode);
+    const matched = Boolean(
+      user
+      && user.role === "admin"
+      && record
+      && sameResetHash(record.codeHash, incomingHash)
+      && sameId(record.userId, user.id)
+    );
+    if (!matched) {
+      sameResetHash(ADMIN_RECOVERY_DUMMY_HASH, incomingHash);
+      const locked = rememberAdminRecoveryFailure(req, email);
+      audit("admin_recovery_failed", user && user.role === "admin" ? { adminId: Number(user.id) } : {});
+      if (locked) return sendJson(res, 429, { error: "تم تجاوز عدد المحاولات. حاول لاحقًا" });
+      return sendJson(res, 400, { error: genericFail });
+    }
+    const hashed = hashPassword(newPassword);
+    user.passwordHash = hashed.passwordHash;
+    user.salt = hashed.salt;
+    db.adminRecovery = (db.adminRecovery || []).filter((item) => !sameId(item.userId, user.id));
+    saveDb();
+    clearAdminRecoveryFailures(req, email);
+    audit("admin_recovery_completed", { adminId: Number(user.id) });
+    return sendJson(res, 200, { ok: true, message: "تم تعيين كلمة مرور الأدمن الجديدة. يمكنك تسجيل الدخول." });
+  } catch {
+    return sendJson(res, 500, { error: "تعذر استعادة حساب الأدمن" });
   }
 });
 
@@ -2011,6 +2200,48 @@ app.get("/api/admin/stats", authMiddleware, adminMiddleware, (req, res) => {
 
 app.get("/api/admin/users", authMiddleware, adminMiddleware, (req, res) => {
   res.json(db.users.map(publicUser).reverse());
+});
+
+app.post("/api/admin/users/:id/password-reset", authMiddleware, adminMiddleware, (req, res) => {
+  try {
+    const user = db.users.find((item) => sameId(item.id, req.params.id));
+    if (!user) return sendJson(res, 404, { error: "المستخدم غير موجود" });
+    if (user.role === "admin") {
+      return sendJson(res, 400, { error: "استعادة حساب الأدمن تتم من مسار الأدمن المستقل" });
+    }
+    const claimedUserId = numericId(req.body?.userId);
+    if (claimedUserId && !sameId(claimedUserId, user.id)) {
+      return sendJson(res, 400, { error: "تعذر إنشاء رابط هذا المستخدم" });
+    }
+    const email = normalizeEmail(user.email);
+    const rawToken = randomBytes(32).toString("hex");
+    pruneResetTokens();
+    db.passwordResetTokens = (db.passwordResetTokens || []).filter((item) => (
+      normalizeEmail(item.email) !== email && !sameId(item.userId, user.id)
+    ));
+    db.passwordResetTokens.push({
+      email,
+      userId: Number(user.id),
+      tokenHash: hashResetToken(rawToken),
+      expiresAt: Date.now() + ADMIN_RESET_TTL_MS,
+      used: false,
+      source: "admin"
+    });
+    saveDb();
+    audit("admin_password_reset_issued", { userId: Number(user.id), adminId: Number(req.user.id) });
+    const resetUrl = `${resetPublicUrl(req)}/#/reset/${encodeResetPathPayload(email, rawToken)}`;
+    return sendJson(res, 200, {
+      ok: true,
+      userId: Number(user.id),
+      email,
+      code: rawToken,
+      resetUrl,
+      expiresInMinutes: Math.round(ADMIN_RESET_TTL_MS / 60000),
+      message: "تم إنشاء رابط استعادة لمرة واحدة. انسخه وأرسله للمستخدم عبر الدعم."
+    });
+  } catch {
+    return sendJson(res, 500, { error: "تعذر إنشاء رابط استعادة كلمة المرور" });
+  }
 });
 
 app.post("/api/admin/users/:id/balance", authMiddleware, adminMiddleware, (req, res) => {

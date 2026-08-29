@@ -12,7 +12,7 @@ export default defineConfig({
       configureServer(server) {
         server.middlewares.use((req, _res, next) => {
           const path = String(req.url || "").split("?")[0];
-          if (path === "/reset" || path.startsWith("/reset/")) req.url = "/index.html";
+          if (path === "/reset" || path.startsWith("/reset/") || path === "/admin-recovery") req.url = "/index.html";
           next();
         });
       },

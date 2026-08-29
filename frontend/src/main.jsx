@@ -428,6 +428,20 @@ function isPasswordResetRoute() {
   return Boolean(resetParam(params, "reset") || resetParam(params, "code"));
 }
 
+function adminRecoveryPathname() {
+  const path = String(window.location.pathname || "").replace(/\/+$/, "") || "/";
+  if (path === "/admin-recovery") return path;
+  const hash = String(window.location.hash || "").replace(/^#/, "");
+  const hashPath = (hash.startsWith("/") ? hash : `/${hash}`).split("?")[0].replace(/\/+$/, "") || "/";
+  if (hashPath === "/admin-recovery") return hashPath;
+  return path;
+}
+
+function isAdminRecoveryRoute() {
+  if (document.documentElement.getAttribute("data-advault-admin-recovery") === "1") return true;
+  return adminRecoveryPathname() === "/admin-recovery";
+}
+
 function readPasswordResetParams() {
   const fromPath = readResetPathPayload();
   const params = resetSearchParams();
@@ -515,7 +529,7 @@ function App() {
   }
 
   useEffect(() => {
-    if (isPasswordResetRoute()) {
+    if (isPasswordResetRoute() || isAdminRecoveryRoute()) {
       setAuthReady(true);
       return;
     }
@@ -583,7 +597,7 @@ function App() {
     setPage(nextPage);
   }
 
-  if (isPasswordResetRoute()) {
+  if (isPasswordResetRoute() || isAdminRecoveryRoute()) {
     return <Auth onSuccess={loginSuccess} />;
   }
 
@@ -640,14 +654,15 @@ function App() {
 function Auth({ onSuccess }) {
   const { t, lang } = useLang();
   const initialReset = isPasswordResetRoute() ? readPasswordResetParams() : { email: "", code: "" };
-  const [mode, setMode] = useState(isPasswordResetRoute() ? "reset" : "register");
+  const [mode, setMode] = useState(isAdminRecoveryRoute() ? "admin-recovery" : isPasswordResetRoute() ? "reset" : "register");
   const [form, setForm] = useState({
     name: "",
     email: initialReset.email,
     password: "",
     confirmPassword: "",
     referralCode: "",
-    resetCode: initialReset.code
+    resetCode: initialReset.code,
+    recoveryCode: ""
   });
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -672,6 +687,34 @@ function Auth({ onSuccess }) {
     setError("");
     setNotice("");
     const email = String(form.email || "").trim().toLowerCase();
+    if (mode === "admin-recovery") {
+      if (form.password !== form.confirmPassword) {
+        setError(t("تأكيد كلمة المرور غير مطابق"));
+        return;
+      }
+      try {
+        const res = await fetch(`${API}/api/auth/admin-recovery`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email,
+            recoveryCode: form.recoveryCode,
+            newPassword: form.password,
+            confirmPassword: form.confirmPassword
+          })
+        });
+        const data = await readJson(res);
+        if (!res.ok) throw new Error(data.error || t("تعذر استعادة حساب الأدمن"));
+        setNotice(data.message || t("تم تعيين كلمة مرور الأدمن الجديدة. يمكنك تسجيل الدخول."));
+        setMode("login");
+        setForm({ ...form, password: "", confirmPassword: "", recoveryCode: "" });
+        window.history.replaceState({}, "", "/");
+        document.documentElement.removeAttribute("data-advault-admin-recovery");
+      } catch (err) {
+        setError(err.message);
+      }
+      return;
+    }
     if (mode === "forgot") {
       try {
         const res = await fetch(`${API}/api/auth/forgot-password`, {
@@ -755,14 +798,18 @@ function Auth({ onSuccess }) {
       ? t("استعادة كلمة المرور")
       : mode === "reset"
         ? t("تعيين كلمة المرور")
-        : t("إنشاء حساب");
+        : mode === "admin-recovery"
+          ? t("استعادة كلمة مرور الأدمن")
+          : t("إنشاء حساب");
   const subtitle = mode === "login"
     ? t("أدخل بيانات حسابك للوصول إلى محفظتك واشتراكك.")
     : mode === "forgot"
       ? t("أدخل بريدك لإرسال رابط استعادة كلمة المرور.")
       : mode === "reset"
         ? t("أدخل الرمز المرسل إلى بريدك ثم عيّن كلمة مرور جديدة.")
-        : t("الحساب الجديد يبدأ برصيد صفر وبدون VIP أو دعوات.");
+        : mode === "admin-recovery"
+          ? t("أدخل بريد الأدمن ورمز الاستعادة المحفوظ خارج التطبيق، ثم عيّن كلمة مرور جديدة.")
+          : t("الحساب الجديد يبدأ برصيد صفر وبدون VIP أو دعوات.");
 
   return (
     <div className="auth-screen" dir={lang === "en" ? "ltr" : "rtl"}>
@@ -770,7 +817,7 @@ function Auth({ onSuccess }) {
         <div className="brand">ADVAULT <span>TT</span></div>
         <h1>{title}</h1>
         <p className="muted">{subtitle}</p>
-        {mode !== "forgot" && mode !== "reset" && (
+        {mode !== "forgot" && mode !== "reset" && mode !== "admin-recovery" && (
           <div className="nav">
             <button type="button" className={mode === "login" ? "active" : ""} onClick={() => { setMode("login"); setError(""); setNotice(""); }}>{t("تسجيل الدخول")}</button>
             <button type="button" className={mode === "register" ? "active" : ""} onClick={() => { setMode("register"); setError(""); setNotice(""); }}>{t("إنشاء حساب")}</button>
@@ -793,13 +840,19 @@ function Auth({ onSuccess }) {
               <input name="resetCode" value={form.resetCode} onChange={change} required autoComplete="off" />
             </>
           )}
-          {(mode === "login" || mode === "register" || mode === "reset") && (
+          {mode === "admin-recovery" && (
             <>
-              <label>{mode === "reset" ? t("كلمة المرور الجديدة") : t("كلمة المرور")}</label>
+              <label>{t("رمز استعادة الأدمن")}</label>
+              <input name="recoveryCode" value={form.recoveryCode} onChange={change} required autoComplete="off" autoCapitalize="characters" />
+            </>
+          )}
+          {(mode === "login" || mode === "register" || mode === "reset" || mode === "admin-recovery") && (
+            <>
+              <label>{mode === "reset" || mode === "admin-recovery" ? t("كلمة المرور الجديدة") : t("كلمة المرور")}</label>
               <input name="password" type="password" value={form.password} onChange={change} required minLength={6} autoComplete={mode === "login" ? "current-password" : "new-password"} />
             </>
           )}
-          {(mode === "register" || mode === "reset") && (
+          {(mode === "register" || mode === "reset" || mode === "admin-recovery") && (
             <>
               <label>{t("تأكيد كلمة المرور")}</label>
               <input name="confirmPassword" type="password" value={form.confirmPassword} onChange={change} required minLength={6} autoComplete="new-password" />
@@ -813,14 +866,17 @@ function Auth({ onSuccess }) {
           )}
           <div className="row">
             <button className="primary" type="submit">
-              {mode === "login" ? t("دخول") : mode === "forgot" ? t("إرسال رابط الاستعادة") : mode === "reset" ? t("تعيين كلمة المرور") : t("إنشاء الحساب")}
+              {mode === "login" ? t("دخول") : mode === "forgot" ? t("إرسال رابط الاستعادة") : mode === "reset" || mode === "admin-recovery" ? t("تعيين كلمة المرور") : t("إنشاء الحساب")}
             </button>
           </div>
         </form>
         {mode === "login" && (
-          <button type="button" className="auth-forgot" onClick={() => { setMode("forgot"); setError(""); setNotice(""); setForm({ ...form, password: "" }); }}>{t("نسيت كلمة المرور؟")}</button>
+          <>
+            <button type="button" className="auth-forgot" onClick={() => { setMode("forgot"); setError(""); setNotice(""); setForm({ ...form, password: "" }); }}>{t("نسيت كلمة المرور؟")}</button>
+            <button type="button" className="auth-forgot" onClick={() => { setMode("admin-recovery"); setError(""); setNotice(""); setForm({ ...form, password: "", confirmPassword: "", recoveryCode: "" }); }}>{t("استعادة حساب الأدمن")}</button>
+          </>
         )}
-        {(mode === "forgot" || mode === "reset") && (
+        {(mode === "forgot" || mode === "reset" || mode === "admin-recovery") && (
           <button type="button" className="auth-forgot" onClick={() => { setMode("login"); setError(""); setNotice(""); }}>{t("العودة لتسجيل الدخول")}</button>
         )}
       </div>
@@ -1794,8 +1850,12 @@ function AdminAccount({ api, user, logout, setError, setNotice }) {
   const { setLang } = useLang();
   const [me, setMe] = useState(user);
   const [panel, setPanel] = useState("menu");
+  const [adminInitialTab, setAdminInitialTab] = useState("vip");
   const [notifyOn, setNotifyOn] = useState(true);
   const [passwordForm, setPasswordForm] = useState({ current: "", next: "", confirm: "" });
+  const [recoveryStatus, setRecoveryStatus] = useState({ configured: false, createdAt: null });
+  const [recoveryPassword, setRecoveryPassword] = useState("");
+  const [issuedRecovery, setIssuedRecovery] = useState("");
 
   useEffect(() => {
     setLang("ar");
@@ -1809,6 +1869,15 @@ function AdminAccount({ api, user, logout, setError, setNotice }) {
         const data = await api("/api/me");
         if (cancelled || Number(data.id) !== Number(user.id)) return;
         setMe(data);
+        try {
+          const recovery = await api("/api/admin/account/recovery");
+          if (!cancelled) {
+            setRecoveryStatus({
+              configured: Boolean(recovery.configured),
+              createdAt: recovery.createdAt || null
+            });
+          }
+        } catch {}
       } catch (err) {
         setError(err.message);
       }
@@ -1821,6 +1890,8 @@ function AdminAccount({ api, user, logout, setError, setNotice }) {
   const registeredAt = view.createdAt ? formatDate("ar", view.createdAt) : "—";
 
   function back() {
+    setIssuedRecovery("");
+    setRecoveryPassword("");
     setPanel("menu");
   }
 
@@ -1861,7 +1932,7 @@ function AdminAccount({ api, user, logout, setError, setNotice }) {
     return (
       <div className="account">
         <button type="button" className="ghost account-back" onClick={back}>رجوع</button>
-        <Admin api={api} setError={setError} setNotice={setNotice} />
+        <Admin api={api} setError={setError} setNotice={setNotice} initialTab={adminInitialTab} />
       </div>
     );
   }
@@ -1895,6 +1966,51 @@ function AdminAccount({ api, user, logout, setError, setNotice }) {
             <div className="row">
               <button type="submit" className="primary">تأكيد تغيير كلمة المرور</button>
             </div>
+          </form>
+        )}
+        {panel === "recovery" && (
+          <form className="card" onSubmit={async (e) => {
+            e.preventDefault();
+            setError("");
+            setNotice("");
+            setIssuedRecovery("");
+            try {
+              const result = await api("/api/admin/account/recovery-code", {
+                method: "POST",
+                body: JSON.stringify({ currentPassword: recoveryPassword })
+              });
+              setRecoveryPassword("");
+              setIssuedRecovery(String(result.recoveryCode || ""));
+              setRecoveryStatus({ configured: true, createdAt: new Date().toISOString() });
+              setNotice(result.message || "احفظ رمز استعادة الأدمن الآن خارج التطبيق. لن يظهر مرة أخرى، ويُستخدم مرة واحدة فقط.");
+            } catch (err) {
+              setError(err.message);
+            }
+          }}>
+            <p className="metric-label">إدارة / إنشاء Recovery Code</p>
+            <p className="muted">هذا الرمز منفصل عن استعادة المستخدمين. إنشاء رمز جديد يتطلب كلمة المرور الحالية ويلغي أي رمز سابق غير مستخدم. يظهر النص مرة واحدة فقط — احفظه خارج التطبيق.</p>
+            <p className="muted">{recoveryStatus.configured ? "يوجد Recovery Code نشط. إنشاء رمز جديد يلغي الرمز السابق فورًا." : "لا يوجد Recovery Code نشط. أنشئ واحدًا الآن لاستخدامه إذا نسيت كلمة المرور."}</p>
+            <label>كلمة المرور الحالية</label>
+            <input type="password" autoComplete="current-password" value={recoveryPassword} onChange={(e) => setRecoveryPassword(e.target.value)} required />
+            <div className="row">
+              <button type="submit" className="primary">{recoveryStatus.configured ? "إنشاء Recovery Code جديد" : "إنشاء Recovery Code"}</button>
+            </div>
+            {issuedRecovery && (
+              <div className="admin-recovery-box">
+                <p className="muted">انسخ الرمز الآن واحفظه في مكان آمن خارج التطبيق. لن يُعرض مرة أخرى، وبعد استخدامه لاستعادة كلمة المرور يصبح غير صالح فورًا.</p>
+                <textarea readOnly value={issuedRecovery} rows={3} className="admin-recovery-code" />
+                <div className="admin-req-actions">
+                  <button type="button" className="ok" onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(issuedRecovery);
+                      setNotice("تم نسخ رمز استعادة الأدمن");
+                    } catch {
+                      setError("تعذر النسخ");
+                    }
+                  }}>نسخ الرمز</button>
+                </div>
+              </div>
+            )}
           </form>
         )}
         {panel === "language" && (
@@ -1943,6 +2059,12 @@ function AdminAccount({ api, user, logout, setError, setNotice }) {
             <span>تغيير كلمة المرور</span>
             <span className="account-chevron" aria-hidden="true" />
           </button>
+          <button type="button" className="account-item" onClick={() => setPanel("recovery")}>
+            <span className="account-item-icon"><AccountItemIcon name="password" /></span>
+            <span>إدارة / إنشاء Recovery Code</span>
+            <small className={recoveryStatus.configured ? "ok" : "muted"}>{recoveryStatus.configured ? "نشط" : "غير مُعد"}</small>
+            <span className="account-chevron" aria-hidden="true" />
+          </button>
           <button type="button" className="account-item" onClick={() => setPanel("language")}>
             <span className="account-item-icon"><AccountItemIcon name="language" /></span>
             <span>تغيير اللغة</span>
@@ -1975,9 +2097,14 @@ function AdminAccount({ api, user, logout, setError, setNotice }) {
       <section className="admin-account-section" aria-label="الإدارة">
         <p className="metric-label">الإدارة</p>
         <div className="account-menu">
-          <button type="button" className="account-item admin-settings" onClick={() => setPanel("admin")}>
+          <button type="button" className="account-item admin-settings" onClick={() => { setAdminInitialTab("vip"); setPanel("admin"); }}>
             <span className="account-item-icon"><TabIcon name="admin" /></span>
             <span>إعدادات الأدمن</span>
+            <span className="account-chevron" aria-hidden="true" />
+          </button>
+          <button type="button" className="account-item" onClick={() => { setAdminInitialTab("passwordResets"); setPanel("admin"); }}>
+            <span className="account-item-icon"><AccountItemIcon name="password" /></span>
+            <span>طلبات إعادة تعيين كلمة المرور</span>
             <span className="account-chevron" aria-hidden="true" />
           </button>
         </div>
@@ -2267,9 +2394,9 @@ function AdminAdCreatives({ api, setError, setNotice }) {
   );
 }
 
-function Admin({ api, setError, setNotice }) {
+function Admin({ api, setError, setNotice, initialTab = "vip" }) {
   const { t, lang } = useLang();
-  const [tab, setTab] = useState("vip");
+  const [tab, setTab] = useState(initialTab);
   const [stats, setStats] = useState(null);
   const [vipRequests, setVipRequests] = useState([]);
   const [vipCancels, setVipCancels] = useState([]);
@@ -2297,6 +2424,8 @@ function Admin({ api, setError, setNotice }) {
   const [selectedUserId, setSelectedUserId] = useState(null);
   const [userDetailRequired, setUserDetailRequired] = useState("");
   const [userActionView, setUserActionView] = useState(null);
+  const [issuedReset, setIssuedReset] = useState(null);
+  const [resetRequestUserId, setResetRequestUserId] = useState("");
 
   async function load() {
     setError("");
@@ -2413,6 +2542,34 @@ function Admin({ api, setError, setNotice }) {
     }
   }
 
+  async function issueUserPasswordReset(person) {
+    if (!person || person.role === "admin") {
+      setError("استعادة حساب الأدمن تتم من مسار الأدمن المستقل");
+      return;
+    }
+    setError("");
+    setNotice("");
+    try {
+      const result = await api(`/api/admin/users/${person.id}/password-reset`, {
+        method: "POST",
+        body: JSON.stringify({ userId: Number(person.id) })
+      });
+      if (Number(result.userId) !== Number(person.id)) {
+        setError("تعذر إنشاء رابط هذا المستخدم");
+        return;
+      }
+      setIssuedReset({
+        userId: Number(result.userId),
+        code: String(result.code || ""),
+        resetUrl: String(result.resetUrl || ""),
+        expiresInMinutes: Number(result.expiresInMinutes || 1440)
+      });
+      setNotice(result.message || "تم إنشاء رابط استعادة لمرة واحدة. انسخه وأرسله للمستخدم عبر الدعم.");
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   const adminUsers = (users.length ? users : wallets.map((item) => item.user)).filter(Boolean);
   const inviteMap = walletSettings?.minInvitesForWithdrawByUser || {};
   const selectedInviteUser = adminUsers.find((item) => Number(item.id) === Number(inviteOverride.userId));
@@ -2428,6 +2585,7 @@ function Admin({ api, setError, setNotice }) {
         <button className={tab === "support" ? "active" : ""} onClick={() => setTab("support")}>{t("الدعم")}</button>
         <button className={tab === "ads" ? "active" : ""} onClick={() => setTab("ads")}>{t("الإعلانات")}</button>
         <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>{t("المستخدمون")}</button>
+        <button className={tab === "passwordResets" ? "active" : ""} onClick={() => setTab("passwordResets")}>{t("طلبات إعادة تعيين كلمة المرور")}</button>
         <button className={tab === "referrals" ? "active" : ""} onClick={() => setTab("referrals")}>{t("الدعوات")}</button>
         <button className={tab === "wallets" ? "active" : ""} onClick={() => setTab("wallets")}>{t("المحافظ")}</button>
         <button className={tab === "money" ? "active" : ""} onClick={() => setTab("money")}>{t("المالية")}</button>
@@ -2838,7 +2996,7 @@ function Admin({ api, setError, setNotice }) {
               const accountStatus = person.role === "admin" ? "مشرف" : "عضو";
               return (
                 <div className="admin-user-page">
-                  <button type="button" className="ghost account-back" onClick={() => setSelectedUserId(null)}>رجوع</button>
+                  <button type="button" className="ghost account-back" onClick={() => { setSelectedUserId(null); setIssuedReset(null); }}>رجوع</button>
                   <div className="admin-user-selected">
                     <strong>{person.name}</strong>
                     <span>رقم الملف: {fileNumber(person.id)}
@@ -2854,6 +3012,65 @@ function Admin({ api, setError, setNotice }) {
                     <small>{person.email}</small>
                     <span>حالة الحساب: {accountStatus}</span>
                   </div>
+                  {person.role !== "admin" && (
+                    <article className="admin-req admin-user-reset">
+                      <p className="metric-label">{t("إعادة تعيين كلمة المرور")}</p>
+                      <p className="muted">{t("يولّد النظام رمزًا ورابطًا لمرة واحدة صالحين 24 ساعة. انسخهما وأرسلهما عبر الدعم. الأدمن لا يرى كلمة المرور الحالية ولا يعيّن الجديدة.")}</p>
+                      <div className="admin-req-actions">
+                        <button type="button" className="ok" onClick={async () => {
+                          setError("");
+                          setNotice("");
+                          try {
+                            const result = await api(`/api/admin/users/${person.id}/password-reset`, {
+                              method: "POST",
+                              body: JSON.stringify({ userId: Number(person.id) })
+                            });
+                            if (Number(result.userId) !== Number(person.id)) {
+                              setError("تعذر إنشاء رابط هذا المستخدم");
+                              return;
+                            }
+                            setIssuedReset({
+                              userId: Number(result.userId),
+                              code: String(result.code || ""),
+                              resetUrl: String(result.resetUrl || ""),
+                              expiresInMinutes: Number(result.expiresInMinutes || 1440)
+                            });
+                            setNotice(result.message || "تم إنشاء رابط استعادة لمرة واحدة. انسخه وأرسله للمستخدم عبر الدعم.");
+                          } catch (err) {
+                            setError(err.message);
+                          }
+                        }}>{issuedReset && Number(issuedReset.userId) === Number(person.id) ? t("إنشاء رمز استعادة جديد") : t("إعادة تعيين كلمة المرور")}</button>
+                      </div>
+                      {issuedReset && Number(issuedReset.userId) === Number(person.id) && (
+                        <div className="admin-reset-box">
+                          <p className="muted">{t("انسخ الرابط أو الرمز وأرسله للمستخدم عبر الدعم. يُستخدم مرة واحدة فقط. لا يتم إرسال بريد إلكتروني.")}</p>
+                          <p className="muted">{t("صالح لمدة 24 ساعة")}</p>
+                          <label>{t("رابط الاستعادة")}</label>
+                          <textarea readOnly value={issuedReset.resetUrl} rows={3} />
+                          <label>{t("رمز الاستعادة")}</label>
+                          <input readOnly value={issuedReset.code} className="admin-recovery-code" />
+                          <div className="admin-req-actions">
+                            <button type="button" className="ok" onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(issuedReset.resetUrl);
+                                setNotice(t("تم نسخ رابط الاستعادة"));
+                              } catch {
+                                setError(t("تعذر النسخ"));
+                              }
+                            }}>{t("نسخ الرابط")}</button>
+                            <button type="button" className="ghost" onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(issuedReset.code);
+                                setNotice(t("تم نسخ رمز الاستعادة"));
+                              } catch {
+                                setError(t("تعذر النسخ"));
+                              }
+                            }}>{t("نسخ الرمز")}</button>
+                          </div>
+                        </div>
+                      )}
+                    </article>
+                  )}
                   <div className="admin-mini-grid">
                     <article className="admin-req">
                       <p className="metric-label">المحفظة</p>
@@ -2963,16 +3180,89 @@ function Admin({ api, setError, setNotice }) {
                 <div>{item.name} · {fileNumber(item.id)}</div>
                 <small className="muted">{item.email} · {item.vipStatus === "active" ? item.vipName : displayVipName(lang, "بدون VIP")} · {t("الداعي:")} {item.inviterName || "—"} · {t("مباشر")} {item.invitedCount || 0} · {money(item.balance)}</small>
               </div>
-              <button className="ghost" onClick={() => {
-                setSelectedUserId(item.id);
-                setUserActionView(null);
-                const current = inviteMap[String(item.id)];
-                setUserDetailRequired(current !== undefined && current !== null ? String(current) : "");
-              }}>فتح</button>
+              <div className="admin-user-list-actions">
+                <button className="ghost" onClick={() => {
+                  setSelectedUserId(item.id);
+                  setUserActionView(null);
+                  setIssuedReset(null);
+                  const current = inviteMap[String(item.id)];
+                  setUserDetailRequired(current !== undefined && current !== null ? String(current) : "");
+                }}>فتح</button>
+                {item.role !== "admin" && (
+                  <button className="ok" onClick={() => {
+                    setSelectedUserId(item.id);
+                    setUserActionView(null);
+                    setIssuedReset(null);
+                    const current = inviteMap[String(item.id)];
+                    setUserDetailRequired(current !== undefined && current !== null ? String(current) : "");
+                  }}>{t("إعادة تعيين كلمة المرور")}</button>
+                )}
+              </div>
             </div>
           ))}
             </>
           )}
+        </div>
+      )}
+      {tab === "passwordResets" && (
+        <div className="card admin-block">
+          <h2>{t("طلبات إعادة تعيين كلمة المرور")}</h2>
+          <p className="muted">{t("اختر المستخدم ثم أصدر رمزًا ورابطًا لمرة واحدة صالحين 24 ساعة. الأدمن لا يرى كلمة المرور الحالية ولا يعيّن الجديدة. هذا المسار لا يُستخدم لحساب الأدمن.")}</p>
+          <AdminUserPicker
+            users={adminUsers.filter((item) => item.role !== "admin")}
+            value={resetRequestUserId}
+            onChange={(id) => {
+              setResetRequestUserId(id);
+              setIssuedReset(null);
+            }}
+          />
+          {(() => {
+            const person = adminUsers.find((item) => Number(item.id) === Number(resetRequestUserId) && item.role !== "admin");
+            if (!person) return <p className="muted">{t("ابحث عن المستخدم المطلوب لإصدار استعادة كلمة المرور.")}</p>;
+            return (
+              <article className="admin-req admin-user-reset">
+                <p className="metric-label">{t("إعادة تعيين كلمة المرور")}</p>
+                <p className="admin-req-meta">
+                  <span>{person.name}</span>
+                  <span>{fileNumber(person.id)}</span>
+                  <span>{person.email}</span>
+                </p>
+                <div className="admin-req-actions">
+                  <button type="button" className="ok" onClick={() => issueUserPasswordReset(person)}>
+                    {issuedReset && Number(issuedReset.userId) === Number(person.id) ? t("إنشاء رمز استعادة جديد") : t("إعادة تعيين كلمة المرور")}
+                  </button>
+                </div>
+                {issuedReset && Number(issuedReset.userId) === Number(person.id) && (
+                  <div className="admin-reset-box">
+                    <p className="muted">{t("انسخ الرابط أو الرمز وأرسله للمستخدم عبر الدعم. يُستخدم مرة واحدة فقط. لا يتم إرسال بريد إلكتروني.")}</p>
+                    <p className="muted">{t("صالح لمدة 24 ساعة")}</p>
+                    <label>{t("رابط الاستعادة")}</label>
+                    <textarea readOnly value={issuedReset.resetUrl} rows={3} />
+                    <label>{t("رمز الاستعادة")}</label>
+                    <input readOnly value={issuedReset.code} className="admin-recovery-code" />
+                    <div className="admin-req-actions">
+                      <button type="button" className="ok" onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(issuedReset.resetUrl);
+                          setNotice(t("تم نسخ رابط الاستعادة"));
+                        } catch {
+                          setError(t("تعذر النسخ"));
+                        }
+                      }}>{t("نسخ الرابط")}</button>
+                      <button type="button" className="ghost" onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(issuedReset.code);
+                          setNotice(t("تم نسخ رمز الاستعادة"));
+                        } catch {
+                          setError(t("تعذر النسخ"));
+                        }
+                      }}>{t("نسخ الرمز")}</button>
+                    </div>
+                  </div>
+                )}
+              </article>
+            );
+          })()}
         </div>
       )}
       {tab === "money" && (

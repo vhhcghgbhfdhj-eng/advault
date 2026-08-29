@@ -1,3 +1,4 @@
 /reset  /index.html  200
 /reset/*  /index.html  200
+/admin-recovery  /index.html  200
 /*    /index.html   200
