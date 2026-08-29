@@ -693,6 +693,9 @@ function Auth({ onSuccess }) {
         return;
       }
       try {
+        try {
+          console.info("ADVAULT admin-recovery", String(API), "POST /api/auth/admin-recovery");
+        } catch {}
         const res = await fetch(`${API}/api/auth/admin-recovery`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },

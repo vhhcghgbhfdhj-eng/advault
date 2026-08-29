@@ -1058,6 +1058,17 @@ function saveLocalDb(data) {
   writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
 }
 
+function syncLocalAdminRecoveryFromDisk() {
+  if (getSupabaseClient()) return;
+  if (!existsSync(DB_PATH)) return;
+  try {
+    const disk = JSON.parse(readFileSync(DB_PATH, "utf8"));
+    if (Array.isArray(disk.adminRecovery)) db.adminRecovery = disk.adminRecovery;
+  } catch {
+    // keep in-memory records
+  }
+}
+
 function normalizeDb(data) {
   const defaults = seed();
   data.vipPackages = VIP_PACKAGES;
@@ -1723,6 +1734,7 @@ app.post("/api/admin/account/recovery-code", authMiddleware, identityGuard, admi
 
 app.post("/api/auth/admin-recovery", (req, res) => {
   try {
+    syncLocalAdminRecoveryFromDisk();
     const email = normalizeEmail(req.body?.email);
     const rawCode = String(req.body?.recoveryCode || req.body?.code || "");
     const newPassword = String(req.body?.newPassword || "");
@@ -1744,17 +1756,35 @@ app.post("/api/auth/admin-recovery", (req, res) => {
     const user = findUserByEmail(email);
     const record = user && user.role === "admin" ? activeAdminRecovery(user.id) : null;
     const incomingHash = hashAdminRecoveryCode(rawCode);
+    const hashedOk = Boolean(record && sameResetHash(record.codeHash, incomingHash));
     const matched = Boolean(
       user
       && user.role === "admin"
       && record
-      && sameResetHash(record.codeHash, incomingHash)
+      && hashedOk
       && sameId(record.userId, user.id)
     );
     if (!matched) {
       sameResetHash(ADMIN_RECOVERY_DUMMY_HASH, incomingHash);
       const locked = rememberAdminRecoveryFailure(req, email);
-      audit("admin_recovery_failed", user && user.role === "admin" ? { adminId: Number(user.id) } : {});
+      let reason = "unknown";
+      if (!user) reason = "user_not_found";
+      else if (user.role !== "admin") reason = "not_admin";
+      else if (!record) reason = "no_active_record";
+      else if (!hashedOk) reason = "hash_mismatch";
+      else if (!sameId(record.userId, user.id)) reason = "userId_mismatch";
+      audit("admin_recovery_failed", {
+        adminId: user && user.role === "admin" ? Number(user.id) : undefined,
+        reason,
+        storage: getSupabaseClient() ? "supabase" : "local",
+        email,
+        codeLen: normalizeAdminRecoveryCode(rawCode).length,
+        hasRecord: Boolean(record),
+        recordUsed: record ? Boolean(record.used) : null,
+        recordUserId: record ? Number(record.userId) : null,
+        userId: user ? Number(user.id) : null,
+        role: user ? user.role : null
+      });
       if (locked) return sendJson(res, 429, { error: "تم تجاوز عدد المحاولات. حاول لاحقًا" });
       return sendJson(res, 400, { error: genericFail });
     }
