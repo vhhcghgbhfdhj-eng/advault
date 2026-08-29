@@ -5,6 +5,11 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, isAbsolute, join } from "path";
 import { fileURLToPath } from "url";
+import {
+  generateAdminRecoveryCode,
+  hashAdminRecoveryCode,
+  normalizeAdminRecoveryCode
+} from "./admin-recovery-core.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_PATH = (() => {
@@ -117,35 +122,11 @@ function pruneResetTokens() {
   ));
 }
 
-const ADMIN_RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const ADMIN_RECOVERY_CODE_LEN = 32;
 const ADMIN_RECOVERY_MAX_FAILS = 5;
 const ADMIN_RECOVERY_IP_MAX_FAILS = 20;
 const ADMIN_RECOVERY_LOCK_MS = 15 * 60 * 1000;
-const ADMIN_RECOVERY_DUMMY_HASH = createHash("sha256").update("advault-admin-recovery-dummy").digest("hex");
+const ADMIN_RECOVERY_DUMMY_HASH = hashAdminRecoveryCode("advault-admin-recovery-dummy");
 const adminRecoveryAttempts = new Map();
-
-function normalizeAdminRecoveryCode(value) {
-  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-}
-
-function formatAdminRecoveryCode(value) {
-  const raw = normalizeAdminRecoveryCode(value);
-  return raw.match(/.{1,4}/g)?.join("-") || raw;
-}
-
-function generateAdminRecoveryCode() {
-  const bytes = randomBytes(ADMIN_RECOVERY_CODE_LEN);
-  let out = "";
-  for (let i = 0; i < ADMIN_RECOVERY_CODE_LEN; i += 1) {
-    out += ADMIN_RECOVERY_ALPHABET[bytes[i] % ADMIN_RECOVERY_ALPHABET.length];
-  }
-  return formatAdminRecoveryCode(out);
-}
-
-function hashAdminRecoveryCode(value) {
-  return createHash("sha256").update(normalizeAdminRecoveryCode(value)).digest("hex");
-}
 
 function adminRecoveryLockKey(ip, email) {
   return `${String(ip || "").trim()}|${normalizeEmail(email)}`;
@@ -199,6 +180,21 @@ function activeAdminRecovery(userId) {
   return (db.adminRecovery || []).find((item) => (
     sameId(item.userId, userId) && !item.used && item.codeHash
   )) || null;
+}
+
+function issueAdminRecoveryRecord(userId) {
+  const id = numericId(userId);
+  if (!id) throw new Error("invalid_admin");
+  const hadPrevious = Boolean(activeAdminRecovery(id));
+  const rawCode = generateAdminRecoveryCode();
+  db.adminRecovery = (db.adminRecovery || []).filter((item) => !sameId(item.userId, id));
+  db.adminRecovery.push({
+    userId: id,
+    codeHash: hashAdminRecoveryCode(rawCode),
+    createdAt: nowIso(),
+    used: false
+  });
+  return { rawCode, hadPrevious };
 }
 
 function configuredFrontendUrl() {
@@ -1708,24 +1704,15 @@ app.post("/api/admin/account/recovery-code", authMiddleware, identityGuard, admi
       currentOk = false;
     }
     if (!currentOk) return sendJson(res, 400, { error: "كلمة المرور الحالية غير صحيحة" });
-    const hadPrevious = Boolean(activeAdminRecovery(req.user.id));
-    const rawCode = generateAdminRecoveryCode();
-    const codeHash = hashAdminRecoveryCode(rawCode);
-    db.adminRecovery = (db.adminRecovery || []).filter((item) => !sameId(item.userId, req.user.id));
-    db.adminRecovery.push({
-      userId: Number(req.user.id),
-      codeHash,
-      createdAt: nowIso(),
-      used: false
-    });
+    const issued = issueAdminRecoveryRecord(req.user.id);
     saveDb();
-    audit("admin_recovery_code_issued", { adminId: Number(req.user.id), replacedPrevious: hadPrevious });
+    audit("admin_recovery_code_issued", { adminId: Number(req.user.id), replacedPrevious: issued.hadPrevious });
     return sendJson(res, 200, {
       ok: true,
       configured: true,
-      replacedPrevious: hadPrevious,
-      recoveryCode: rawCode,
-      message: hadPrevious
+      replacedPrevious: issued.hadPrevious,
+      recoveryCode: issued.rawCode,
+      message: issued.hadPrevious
         ? "تم إلغاء الرمز السابق. احفظ الرمز الجديد الآن خارج التطبيق. لن يظهر مرة أخرى، ويُستخدم مرة واحدة فقط."
         : "احفظ رمز استعادة الأدمن الآن خارج التطبيق. لن يظهر مرة أخرى، ويُستخدم مرة واحدة فقط."
     });
