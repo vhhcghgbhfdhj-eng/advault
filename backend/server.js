@@ -1588,10 +1588,52 @@ app.post("/api/auth/signup", registerHandler);
 app.post("/api/register", registerHandler);
 app.post("/register", registerHandler);
 
-app.post("/api/auth/login", (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
   try {
   const email = normalizeEmail(req.body?.email);
   const password = String(req.body?.password || "");
+  const client = getSupabaseClient();
+  if (client) {
+    const source = await loadAdminRecoverySource();
+    const sourceUser = (source.users || []).find((item) => normalizeEmail(item.email) === email) || null;
+    const staleAdmin = findUserByEmail(email);
+    if ((sourceUser && sourceUser.role === "admin") || (!sourceUser && staleAdmin && staleAdmin.role === "admin")) {
+      if (!sourceUser || sourceUser.role !== "admin" || normalizeEmail(sourceUser.email) !== email) {
+        return sendJson(res, 401, { error: "بيانات الدخول غير صحيحة" });
+      }
+      if (!verifyPassword(password, sourceUser.salt, sourceUser.passwordHash)) {
+        return sendJson(res, 401, { error: "بيانات الدخول غير صحيحة" });
+      }
+      let user = (db.users || []).find((item) => sameId(item.id, sourceUser.id)) || null;
+      if (!user) {
+        user = migrateUser({ ...sourceUser });
+        db.users.push(user);
+      }
+      user.passwordHash = sourceUser.passwordHash;
+      user.salt = sourceUser.salt;
+      user.email = sourceUser.email;
+      user.role = sourceUser.role;
+      migrateUser(user);
+      syncVipFromRecords(user);
+      const token = issueSession(user.id);
+      const latest = await client.from("app_state").select("payload").eq("id", APP_STATE_ID).maybeSingle();
+      const payload = parseAppStatePayload(latest.data?.payload);
+      if (!latest.error && payload && Array.isArray(payload.users)) {
+        payload.sessions = db.sessions;
+        await client.from("app_state").upsert({ id: APP_STATE_ID, payload }, { onConflict: "id" });
+      }
+      const account = sessionAccount(user);
+      if (
+        Number(account.id) !== Number(user.id)
+        || normalizeEmail(account.email) !== email
+        || account.role !== "admin"
+      ) {
+        return sendJson(res, 500, { error: "تعذر تجهيز جلسة الدخول" });
+      }
+      audit("login", { userId: Number(user.id), email: user.email, role: user.role });
+      return sendJson(res, 200, { token, user: account });
+    }
+  }
   const user = findUserByEmail(email);
   if (!user || !verifyPassword(password, user.salt, user.passwordHash)) {
     return sendJson(res, 401, { error: "بيانات الدخول غير صحيحة" });
@@ -1602,7 +1644,7 @@ app.post("/api/auth/login", (req, res) => {
   const token = issueSession(user.id);
   saveDb();
   const account = sessionAccount(user);
-  if (Number(account.id) !== Number(user.id) || account.email !== email) {
+  if (Number(account.id) !== Number(user.id) || normalizeEmail(account.email) !== email) {
     return sendJson(res, 500, { error: "تعذر تجهيز جلسة الدخول" });
   }
   audit("login", { userId: Number(user.id), email: user.email, role: user.role });
