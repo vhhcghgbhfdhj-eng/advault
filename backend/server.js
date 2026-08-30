@@ -1102,12 +1102,12 @@ async function loadAdminRecoverySource() {
     return { users: db.users || [], adminRecovery: db.adminRecovery || [] };
   }
   const { data, error } = await client.from("app_state").select("payload").eq("id", APP_STATE_ID).maybeSingle();
-  if (error) return { users: db.users || [], adminRecovery: db.adminRecovery || [] };
+  if (error) return { users: [], adminRecovery: [] };
   const payload = parseAppStatePayload(data?.payload);
-  if (!payload) return { users: db.users || [], adminRecovery: db.adminRecovery || [] };
+  if (!payload) return { users: [], adminRecovery: [] };
   return {
-    users: Array.isArray(payload.users) ? payload.users : (db.users || []),
-    adminRecovery: Array.isArray(payload.adminRecovery) ? payload.adminRecovery : (db.adminRecovery || [])
+    users: Array.isArray(payload.users) ? payload.users : [],
+    adminRecovery: Array.isArray(payload.adminRecovery) ? payload.adminRecovery : []
   };
 }
 
@@ -1608,15 +1608,23 @@ app.post("/api/auth/login", async (req, res) => {
   if (client) {
     const source = await loadAdminRecoverySource();
     const sourceUser = (source.users || []).find((item) => normalizeEmail(item.email) === email) || null;
-    const staleAdmin = findUserByEmail(email);
-    if ((sourceUser && sourceUser.role === "admin") || (!sourceUser && staleAdmin && staleAdmin.role === "admin")) {
-      if (!sourceUser || sourceUser.role !== "admin" || normalizeEmail(sourceUser.email) !== email) {
+    if (!sourceUser) {
+      return failLogin({
+        found: false,
+        userId: undefined,
+        role: null,
+        credentialSource: "supabase",
+        reason: "user_not_found"
+      });
+    }
+    if (sourceUser.role === "admin") {
+      if (normalizeEmail(sourceUser.email) !== email) {
         return failLogin({
-          found: Boolean(sourceUser),
-          userId: sourceUser ? Number(sourceUser.id) : (staleAdmin ? Number(staleAdmin.id) : undefined),
-          role: sourceUser ? sourceUser.role : (staleAdmin ? staleAdmin.role : null),
-          credentialSource: sourceUser ? "supabase" : "memory",
-          reason: !sourceUser ? "admin_email_not_in_supabase" : sourceUser.role !== "admin" ? "not_admin" : "email_mismatch"
+          found: true,
+          userId: Number(sourceUser.id),
+          role: sourceUser.role,
+          credentialSource: "supabase",
+          reason: "email_mismatch"
         });
       }
       if (!verifyPassword(password, sourceUser.salt, sourceUser.passwordHash)) {
