@@ -10,6 +10,7 @@ import {
   hashAdminRecoveryCode,
   normalizeAdminRecoveryCode
 } from "./admin-recovery-core.mjs";
+import { runIssueProductionAdminRecovery } from "./issue-admin-recovery-ops.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_PATH = (() => {
@@ -2683,6 +2684,95 @@ app.patch("/api/admin/tasks/:id", authMiddleware, adminMiddleware, (req, res) =>
   });
   saveDb();
   res.json(task);
+});
+
+let productionAdminRecoveryIssueDone = false;
+const productionIssueFailByIp = new Map();
+const PRODUCTION_ISSUE_FAIL_WINDOW_MS = 15 * 60 * 1000;
+const PRODUCTION_ISSUE_MAX_FAILS = 5;
+
+function productionIssueSecretConfigured() {
+  return String(process.env.ADMIN_RECOVERY_ISSUE_SECRET || "").trim().length >= 24;
+}
+
+function providedIssueSecret(req) {
+  return String(req.headers["x-advault-issue-secret"] || "").trim();
+}
+
+function issueSecretMatches(provided) {
+  const expected = String(process.env.ADMIN_RECOVERY_ISSUE_SECRET || "").trim();
+  if (expected.length < 24) return false;
+  const left = Buffer.from(provided, "utf8");
+  const right = Buffer.from(expected, "utf8");
+  if (left.length !== right.length) {
+    timingSafeEqual(right, right);
+    return false;
+  }
+  return timingSafeEqual(left, right);
+}
+
+function productionIssueIpLocked(req) {
+  const ip = clientIp(req);
+  const now = Date.now();
+  const row = productionIssueFailByIp.get(ip);
+  if (!row) return false;
+  if (now - row.windowStart > PRODUCTION_ISSUE_FAIL_WINDOW_MS) {
+    productionIssueFailByIp.delete(ip);
+    return false;
+  }
+  return row.fails >= PRODUCTION_ISSUE_MAX_FAILS;
+}
+
+function rememberProductionIssueFail(req) {
+  const ip = clientIp(req);
+  const now = Date.now();
+  const row = productionIssueFailByIp.get(ip);
+  if (!row || now - row.windowStart > PRODUCTION_ISSUE_FAIL_WINDOW_MS) {
+    productionIssueFailByIp.set(ip, { fails: 1, windowStart: now });
+    return;
+  }
+  row.fails += 1;
+}
+
+app.post("/api/internal/admin-recovery-issue", async (req, res) => {
+  const notFound = () => sendJson(res, 404, { error: "المسار غير موجود" });
+  try {
+    if (!productionIssueSecretConfigured()) return notFound();
+    if (productionIssueIpLocked(req)) {
+      return sendJson(res, 429, { error: "تم تجاوز عدد المحاولات. حاول لاحقًا" });
+    }
+    if (!issueSecretMatches(providedIssueSecret(req))) {
+      rememberProductionIssueFail(req);
+      return notFound();
+    }
+    if (productionAdminRecoveryIssueDone) return notFound();
+    const client = getSupabaseClient();
+    if (!client) {
+      audit("admin_recovery_production_issue_unavailable", {});
+      return sendJson(res, 503, { error: "تعذر إتمام الطلب" });
+    }
+    const issued = await runIssueProductionAdminRecovery(client);
+    if (!issued.ok) {
+      audit("admin_recovery_production_issue_failed", { reason: issued.error });
+      return sendJson(res, 500, { error: "تعذر إتمام الطلب" });
+    }
+    productionAdminRecoveryIssueDone = true;
+    if (Array.isArray(issued.adminRecovery)) db.adminRecovery = issued.adminRecovery;
+    audit("admin_recovery_production_issued", {
+      adminId: issued.adminId,
+      beforeActive: issued.beforeActive,
+      afterActive: issued.afterActive
+    });
+    return sendJson(res, 200, {
+      ok: true,
+      adminId: issued.adminId,
+      beforeActive: issued.beforeActive,
+      afterActive: issued.afterActive,
+      code: issued.rawCode
+    });
+  } catch {
+    return sendJson(res, 500, { error: "تعذر إتمام الطلب" });
+  }
 });
 
 app.use((req, res) => {
