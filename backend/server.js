@@ -10,7 +10,7 @@ import {
   hashAdminRecoveryCode,
   normalizeAdminRecoveryCode
 } from "./admin-recovery-core.mjs";
-import { runIssueProductionAdminRecovery } from "./issue-admin-recovery-ops.mjs";
+import { runIssueProductionAdminRecovery, snapshotAdmin } from "./issue-admin-recovery-ops.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_PATH = (() => {
@@ -1059,6 +1059,19 @@ function saveLocalDb(data) {
   writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
 }
 
+function parseAppStatePayload(raw) {
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  return typeof raw === "object" ? raw : null;
+}
+
 function syncLocalAdminRecoveryFromDisk() {
   if (getSupabaseClient()) return;
   if (!existsSync(DB_PATH)) return;
@@ -1068,6 +1081,34 @@ function syncLocalAdminRecoveryFromDisk() {
   } catch {
     // keep in-memory records
   }
+}
+
+function bindExistingUserFromSource(sourceUser) {
+  if (!sourceUser) return null;
+  const id = numericId(sourceUser.id);
+  if (!id) return null;
+  let mem = (db.users || []).find((item) => sameId(item.id, id));
+  if (!mem) {
+    mem = migrateUser({ ...sourceUser });
+    db.users.push(mem);
+  }
+  return mem;
+}
+
+async function loadAdminRecoverySource() {
+  const client = getSupabaseClient();
+  if (!client) {
+    syncLocalAdminRecoveryFromDisk();
+    return { users: db.users || [], adminRecovery: db.adminRecovery || [] };
+  }
+  const { data, error } = await client.from("app_state").select("payload").eq("id", APP_STATE_ID).maybeSingle();
+  if (error) return { users: db.users || [], adminRecovery: db.adminRecovery || [] };
+  const payload = parseAppStatePayload(data?.payload);
+  if (!payload) return { users: db.users || [], adminRecovery: db.adminRecovery || [] };
+  return {
+    users: Array.isArray(payload.users) ? payload.users : (db.users || []),
+    adminRecovery: Array.isArray(payload.adminRecovery) ? payload.adminRecovery : (db.adminRecovery || [])
+  };
 }
 
 function normalizeDb(data) {
@@ -1105,7 +1146,8 @@ async function loadDb() {
     console.error("تعذر قراءة app_state من Supabase:", error.message);
     return normalizeDb(loadLocalDb());
   }
-  if (data?.payload && typeof data.payload === "object") return normalizeDb(data.payload);
+  const payload = parseAppStatePayload(data?.payload);
+  if (payload) return normalizeDb(payload);
   return normalizeDb(loadLocalDb());
 }
 
@@ -1733,9 +1775,8 @@ app.post("/api/admin/account/recovery-code", authMiddleware, identityGuard, admi
   }
 });
 
-app.post("/api/auth/admin-recovery", (req, res) => {
+app.post("/api/auth/admin-recovery", async (req, res) => {
   try {
-    syncLocalAdminRecoveryFromDisk();
     const email = normalizeEmail(req.body?.email);
     const rawCode = String(req.body?.recoveryCode || req.body?.code || "");
     const newPassword = String(req.body?.newPassword || "");
@@ -1754,9 +1795,23 @@ app.post("/api/auth/admin-recovery", (req, res) => {
     if (newPassword.length < 6) {
       return sendJson(res, 400, { error: "كلمة المرور يجب أن تكون 6 أحرف على الأقل" });
     }
-    const user = findUserByEmail(email);
-    const record = user && user.role === "admin" ? activeAdminRecovery(user.id) : null;
+    const source = await loadAdminRecoverySource();
+    db.adminRecovery = source.adminRecovery || [];
     const incomingHash = hashAdminRecoveryCode(rawCode);
+    let sourceUser = (source.users || []).find((item) => normalizeEmail(item.email) === email) || null;
+    if (!sourceUser || sourceUser.role !== "admin") {
+      const hashedRecord = (source.adminRecovery || []).find((item) => (
+        !item.used && item.codeHash && sameResetHash(item.codeHash, incomingHash)
+      ));
+      if (hashedRecord) {
+        const owner = (source.users || []).find((item) => (
+          sameId(item.id, hashedRecord.userId) && item.role === "admin"
+        ));
+        if (owner) sourceUser = owner;
+      }
+    }
+    const user = sourceUser && sourceUser.role === "admin" ? bindExistingUserFromSource(sourceUser) : null;
+    const record = user && user.role === "admin" ? activeAdminRecovery(user.id) : null;
     const hashedOk = Boolean(record && sameResetHash(record.codeHash, incomingHash));
     const matched = Boolean(
       user
@@ -1790,10 +1845,46 @@ app.post("/api/auth/admin-recovery", (req, res) => {
       return sendJson(res, 400, { error: genericFail });
     }
     const hashed = hashPassword(newPassword);
-    user.passwordHash = hashed.passwordHash;
-    user.salt = hashed.salt;
-    db.adminRecovery = (db.adminRecovery || []).filter((item) => !sameId(item.userId, user.id));
-    saveDb();
+    const client = getSupabaseClient();
+    if (client) {
+      const latest = await client.from("app_state").select("payload").eq("id", APP_STATE_ID).maybeSingle();
+      const payload = parseAppStatePayload(latest.data?.payload);
+      if (latest.error || !payload) {
+        return sendJson(res, 500, { error: genericFail });
+      }
+      const target = (payload.users || []).find((item) => sameId(item.id, user.id) && item.role === "admin");
+      if (!target) {
+        return sendJson(res, 400, { error: genericFail });
+      }
+      const before = snapshotAdmin(target);
+      target.passwordHash = hashed.passwordHash;
+      target.salt = hashed.salt;
+      const financeOk = (
+        target.role === before.role
+        && Number(target.balance) === before.balance
+        && Number(target.totalEarnings || 0) === before.totalEarnings
+        && Number(target.totalWithdrawals || 0) === before.totalWithdrawals
+      );
+      if (!financeOk) {
+        return sendJson(res, 500, { error: genericFail });
+      }
+      payload.adminRecovery = (payload.adminRecovery || []).filter((item) => !sameId(item.userId, target.id));
+      const writeRes = await client.from("app_state").upsert(
+        { id: APP_STATE_ID, payload },
+        { onConflict: "id" }
+      );
+      if (writeRes.error) {
+        return sendJson(res, 500, { error: genericFail });
+      }
+      user.passwordHash = hashed.passwordHash;
+      user.salt = hashed.salt;
+      db.adminRecovery = payload.adminRecovery;
+    } else {
+      user.passwordHash = hashed.passwordHash;
+      user.salt = hashed.salt;
+      db.adminRecovery = (db.adminRecovery || []).filter((item) => !sameId(item.userId, user.id));
+      saveDb();
+    }
     clearAdminRecoveryFailures(req, email);
     audit("admin_recovery_completed", { adminId: Number(user.id) });
     return sendJson(res, 200, { ok: true, message: "تم تعيين كلمة مرور الأدمن الجديدة. يمكنك تسجيل الدخول." });
