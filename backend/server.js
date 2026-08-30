@@ -2905,6 +2905,39 @@ function rememberProductionIssueFail(req) {
   row.fails += 1;
 }
 
+app.get("/api/internal/admin-accounts", async (req, res) => {
+  const notFound = () => sendJson(res, 404, { error: "المسار غير موجود" });
+  try {
+    if (!productionIssueSecretConfigured()) return notFound();
+    if (productionIssueIpLocked(req)) {
+      return sendJson(res, 429, { error: "تم تجاوز عدد المحاولات. حاول لاحقًا" });
+    }
+    if (!issueSecretMatches(providedIssueSecret(req))) {
+      rememberProductionIssueFail(req);
+      return notFound();
+    }
+    const client = getSupabaseClient();
+    if (!client) {
+      return sendJson(res, 503, { error: "تعذر إتمام الطلب" });
+    }
+    const { data, error } = await client.from("app_state").select("payload").eq("id", APP_STATE_ID).maybeSingle();
+    if (error) return sendJson(res, 500, { error: "تعذر إتمام الطلب" });
+    const payload = parseAppStatePayload(data?.payload);
+    const users = Array.isArray(payload?.users) ? payload.users : [];
+    const admins = users
+      .filter((item) => item && item.role === "admin")
+      .map((item) => ({
+        id: Number(item.id),
+        email: String(item.email || ""),
+        role: String(item.role || "")
+      }));
+    audit("admin_accounts_lookup", { adminCount: admins.length });
+    return sendJson(res, 200, { admins });
+  } catch {
+    return sendJson(res, 500, { error: "تعذر إتمام الطلب" });
+  }
+});
+
 app.post("/api/internal/admin-recovery-issue", async (req, res) => {
   const notFound = () => sendJson(res, 404, { error: "المسار غير موجود" });
   try {
