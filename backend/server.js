@@ -1592,6 +1592,18 @@ app.post("/api/auth/login", async (req, res) => {
   try {
   const email = normalizeEmail(req.body?.email);
   const password = String(req.body?.password || "");
+  const failLogin = (fields) => {
+    audit("login_failed", {
+      storage: getSupabaseClient() ? "supabase" : "memory",
+      email,
+      found: Boolean(fields.found),
+      userId: fields.userId,
+      role: fields.role || null,
+      credentialSource: fields.credentialSource,
+      reason: fields.reason
+    });
+    return sendJson(res, 401, { error: "بيانات الدخول غير صحيحة" });
+  };
   const client = getSupabaseClient();
   if (client) {
     const source = await loadAdminRecoverySource();
@@ -1599,10 +1611,22 @@ app.post("/api/auth/login", async (req, res) => {
     const staleAdmin = findUserByEmail(email);
     if ((sourceUser && sourceUser.role === "admin") || (!sourceUser && staleAdmin && staleAdmin.role === "admin")) {
       if (!sourceUser || sourceUser.role !== "admin" || normalizeEmail(sourceUser.email) !== email) {
-        return sendJson(res, 401, { error: "بيانات الدخول غير صحيحة" });
+        return failLogin({
+          found: Boolean(sourceUser),
+          userId: sourceUser ? Number(sourceUser.id) : (staleAdmin ? Number(staleAdmin.id) : undefined),
+          role: sourceUser ? sourceUser.role : (staleAdmin ? staleAdmin.role : null),
+          credentialSource: sourceUser ? "supabase" : "memory",
+          reason: !sourceUser ? "admin_email_not_in_supabase" : sourceUser.role !== "admin" ? "not_admin" : "email_mismatch"
+        });
       }
       if (!verifyPassword(password, sourceUser.salt, sourceUser.passwordHash)) {
-        return sendJson(res, 401, { error: "بيانات الدخول غير صحيحة" });
+        return failLogin({
+          found: true,
+          userId: Number(sourceUser.id),
+          role: sourceUser.role,
+          credentialSource: "supabase",
+          reason: "verify_failed"
+        });
       }
       let user = (db.users || []).find((item) => sameId(item.id, sourceUser.id)) || null;
       if (!user) {
@@ -1636,7 +1660,13 @@ app.post("/api/auth/login", async (req, res) => {
   }
   const user = findUserByEmail(email);
   if (!user || !verifyPassword(password, user.salt, user.passwordHash)) {
-    return sendJson(res, 401, { error: "بيانات الدخول غير صحيحة" });
+    return failLogin({
+      found: Boolean(user),
+      userId: user ? Number(user.id) : undefined,
+      role: user ? user.role : null,
+      credentialSource: "memory",
+      reason: !user ? "user_not_found" : "verify_failed"
+    });
   }
   migrateUser(user);
   syncVipFromRecords(user);
