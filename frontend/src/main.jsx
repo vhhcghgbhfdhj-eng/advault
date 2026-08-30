@@ -1275,7 +1275,6 @@ function Wallet({ api, user, onDone, setError, setNotice }) {
                   <p className="address-box gold">{depositRef(lastDeposit.id)}</p>
                   <p className="muted">{t("رقم الملف")}: {fileNumber(user.id)}</p>
                   <StatusBadge status={lastDeposit.status || "pending"} />
-                  <DepositScreenshot item={lastDeposit} />
                   <div className="wallet-details">
                     <div><span className="muted">{t("المبلغ المطلوب")}</span><b>{money(lastDeposit.amount)}</b></div>
                     <div><span className="muted">{t("العملة")}</span><b>USDT</b></div>
@@ -1331,7 +1330,6 @@ function Wallet({ api, user, onDone, setError, setNotice }) {
               <small className="muted">{depositRef(item.id)} · {item.network || "TRC20"} · {formatDate(lang, item.createdAt)}</small>
             </div>
             <StatusBadge status={item.status} />
-            <DepositScreenshot item={item} />
           </div>
         ))}
       </div>
