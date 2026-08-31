@@ -428,6 +428,11 @@ input:focus, select:focus, textarea:focus {
   border-color: transparent;
 }
 
+input.invite-locked {
+  opacity: 0.9;
+  caret-color: transparent;
+}
+
 .row {
   display: flex;
   gap: 8px;

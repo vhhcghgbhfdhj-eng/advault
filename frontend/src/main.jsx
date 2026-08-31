@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { App as CapApp } from "@capacitor/app";
+import { Clipboard } from "@capacitor/clipboard";
 import "./style.css";
 import { applyDocumentLang, displayVipName, formatDate, readLang, saveLang, translate } from "./i18n.js";
 
@@ -394,9 +395,30 @@ function resetParam(params, name) {
 const INVITE_REF_KEY = "advault_invite_ref";
 const INVITE_REF_EVENT = "advault-invite-ref";
 
+function normalizeInviteCode(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const fromUrl = String(new URL(raw).searchParams.get("ref") || "").trim().toUpperCase();
+    if (/^TT[A-Z0-9]{4,16}$/.test(fromUrl)) return fromUrl;
+  } catch {}
+  const upper = raw.toUpperCase();
+  if (/^TT[A-Z0-9]{4,16}$/.test(upper)) return upper;
+  const match = upper.match(/\b(TT[A-Z0-9]{4,16})\b/);
+  return match ? match[1] : "";
+}
+
+function persistInviteRef(code) {
+  const next = normalizeInviteCode(code);
+  if (!next) return "";
+  try { sessionStorage.setItem(INVITE_REF_KEY, next); } catch {}
+  try { localStorage.setItem(INVITE_REF_KEY, next); } catch {}
+  return next;
+}
+
 function storedInviteRef() {
   try {
-    return String(sessionStorage.getItem(INVITE_REF_KEY) || "").trim().toUpperCase();
+    return normalizeInviteCode(sessionStorage.getItem(INVITE_REF_KEY) || localStorage.getItem(INVITE_REF_KEY) || "");
   } catch {
     return "";
   }
@@ -405,11 +427,9 @@ function storedInviteRef() {
 function captureInviteRefFromHref(href) {
   try {
     const url = new URL(String(href || ""), window.location.origin);
-    const code = String(url.searchParams.get("ref") || url.searchParams.get("amp;ref") || "").trim().toUpperCase();
+    const code = normalizeInviteCode(url.searchParams.get("ref") || url.searchParams.get("amp;ref") || "");
     if (!code) return "";
-    try {
-      sessionStorage.setItem(INVITE_REF_KEY, code);
-    } catch {}
+    persistInviteRef(code);
     try {
       window.history.replaceState({}, "", `/?ref=${encodeURIComponent(code)}`);
     } catch {}
@@ -421,9 +441,24 @@ function captureInviteRefFromHref(href) {
 }
 
 function readInviteRef() {
-  const fromUrl = String(resetParam(resetSearchParams(), "ref") || "").trim().toUpperCase();
-  if (fromUrl) return fromUrl;
-  return storedInviteRef();
+  return normalizeInviteCode(resetParam(resetSearchParams(), "ref")) || storedInviteRef();
+}
+
+async function captureInviteRefFromClipboard() {
+  if (readInviteRef()) return "";
+  let raw = "";
+  try {
+    raw = String((await Clipboard.read())?.value || "");
+  } catch {
+    try {
+      raw = await navigator.clipboard.readText();
+    } catch {
+      raw = "";
+    }
+  }
+  const code = normalizeInviteCode(raw);
+  if (!code) return "";
+  return captureInviteRefFromHref(`https://advault-tt-landing.onrender.com/?ref=${encodeURIComponent(code)}`);
 }
 
 function listenForInviteLinks() {
@@ -431,6 +466,9 @@ function listenForInviteLinks() {
   CapApp.getLaunchUrl().then((launch) => {
     if (launch?.url) captureInviteRefFromHref(launch.url);
   }).catch(() => {});
+  window.setTimeout(() => {
+    captureInviteRefFromClipboard().catch(() => {});
+  }, 500);
   CapApp.addListener("appUrlOpen", (event) => {
     if (event?.url) captureInviteRefFromHref(event.url);
   }).catch(() => {});
@@ -729,16 +767,20 @@ function Auth({ onSuccess }) {
     function applyInviteRef() {
       const code = readInviteRef();
       if (!code) return;
+      persistInviteRef(code);
       setMode("register");
       setForm((current) => (current.referralCode === code ? current : { ...current, referralCode: code }));
     }
     applyInviteRef();
+    captureInviteRefFromClipboard().then(applyInviteRef).catch(() => applyInviteRef());
     window.addEventListener(INVITE_REF_EVENT, applyInviteRef);
     return () => window.removeEventListener(INVITE_REF_EVENT, applyInviteRef);
   }, []);
 
   function change(e) {
-    setForm({ ...form, [e.target.name === "advaultEmail" ? "email" : e.target.name]: e.target.value });
+    const name = e.target.name === "advaultEmail" ? "email" : e.target.name;
+    if (name === "referralCode" && storedInviteRef()) return;
+    setForm({ ...form, [name]: e.target.value });
   }
 
   async function submit(e) {
@@ -838,8 +880,8 @@ function Auth({ onSuccess }) {
           name: form.name,
           email,
           password: form.password,
-          ...(mode === "register" && String(form.referralCode || "").trim()
-            ? { referralCode: String(form.referralCode).trim() }
+          ...(mode === "register" && (storedInviteRef() || String(form.referralCode || "").trim())
+            ? { referralCode: storedInviteRef() || String(form.referralCode).trim() }
             : {})
         })
       });
@@ -922,8 +964,16 @@ function Auth({ onSuccess }) {
           )}
           {mode === "register" && (
             <>
-              <label>{t("كود الدعوة (اختياري)")}</label>
-              <input name="referralCode" value={form.referralCode} onChange={change} />
+              <label>{storedInviteRef() ? t("كود الدعوة") : t("كود الدعوة (اختياري)")}</label>
+              <input
+                name="referralCode"
+                className={storedInviteRef() ? "invite-locked" : undefined}
+                value={form.referralCode}
+                onChange={change}
+                readOnly={Boolean(storedInviteRef())}
+                autoComplete="off"
+              />
+              {storedInviteRef() ? <p className="muted">{t("كود الدعوة من الرابط ولا يمكن تغييره")}</p> : null}
             </>
           )}
           <div className="row">
