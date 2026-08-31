@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { App as CapApp } from "@capacitor/app";
 import "./style.css";
 import { applyDocumentLang, displayVipName, formatDate, readLang, saveLang, translate } from "./i18n.js";
 
@@ -390,6 +391,51 @@ function resetParam(params, name) {
   return String(params.get(name) || params.get(`amp;${name}`) || "").trim();
 }
 
+const INVITE_REF_KEY = "advault_invite_ref";
+const INVITE_REF_EVENT = "advault-invite-ref";
+
+function storedInviteRef() {
+  try {
+    return String(sessionStorage.getItem(INVITE_REF_KEY) || "").trim().toUpperCase();
+  } catch {
+    return "";
+  }
+}
+
+function captureInviteRefFromHref(href) {
+  try {
+    const url = new URL(String(href || ""), window.location.origin);
+    const code = String(url.searchParams.get("ref") || url.searchParams.get("amp;ref") || "").trim().toUpperCase();
+    if (!code) return "";
+    try {
+      sessionStorage.setItem(INVITE_REF_KEY, code);
+    } catch {}
+    try {
+      window.history.replaceState({}, "", `/?ref=${encodeURIComponent(code)}`);
+    } catch {}
+    window.dispatchEvent(new Event(INVITE_REF_EVENT));
+    return code;
+  } catch {
+    return "";
+  }
+}
+
+function readInviteRef() {
+  const fromUrl = String(resetParam(resetSearchParams(), "ref") || "").trim().toUpperCase();
+  if (fromUrl) return fromUrl;
+  return storedInviteRef();
+}
+
+function listenForInviteLinks() {
+  captureInviteRefFromHref(window.location.href);
+  CapApp.getLaunchUrl().then((launch) => {
+    if (launch?.url) captureInviteRefFromHref(launch.url);
+  }).catch(() => {});
+  CapApp.addListener("appUrlOpen", (event) => {
+    if (event?.url) captureInviteRefFromHref(event.url);
+  }).catch(() => {});
+}
+
 function decodeResetPathPayload(segment) {
   try {
     const cleaned = String(segment || "").trim();
@@ -660,7 +706,7 @@ function Auth({ onSuccess }) {
     email: initialReset.email,
     password: "",
     confirmPassword: "",
-    referralCode: "",
+    referralCode: isPasswordResetRoute() || isAdminRecoveryRoute() ? "" : readInviteRef(),
     resetCode: initialReset.code,
     recoveryCode: ""
   });
@@ -676,6 +722,19 @@ function Auth({ onSuccess }) {
       email: next.email || current.email,
       resetCode: next.code || current.resetCode
     }));
+  }, []);
+
+  useEffect(() => {
+    if (isPasswordResetRoute() || isAdminRecoveryRoute()) return;
+    function applyInviteRef() {
+      const code = readInviteRef();
+      if (!code) return;
+      setMode("register");
+      setForm((current) => (current.referralCode === code ? current : { ...current, referralCode: code }));
+    }
+    applyInviteRef();
+    window.addEventListener(INVITE_REF_EVENT, applyInviteRef);
+    return () => window.removeEventListener(INVITE_REF_EVENT, applyInviteRef);
   }, []);
 
   function change(e) {
@@ -1413,7 +1472,9 @@ function Referral({ api, user, setError, setNotice }) {
 
   async function copyLink() {
     try {
-      await navigator.clipboard.writeText(`${window.location.origin}/?ref=${data.code}`);
+      const native = typeof window.Capacitor?.isNativePlatform === "function" && window.Capacitor.isNativePlatform();
+      const origin = native ? "https://advault-tt-landing.onrender.com" : window.location.origin;
+      await navigator.clipboard.writeText(`${origin}/?ref=${data.code}`);
       setNotice(t("تم نسخ رابط الدعوة"));
     } catch {
       setError(t("تعذر النسخ"));
@@ -3393,4 +3454,5 @@ function Admin({ api, setError, setNotice, initialTab = "vip" }) {
   );
 }
 
+listenForInviteLinks();
 createRoot(document.getElementById("root")).render(<LangProvider><App /></LangProvider>);

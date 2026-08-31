@@ -314,10 +314,30 @@ function makeReferralCode() {
 
 function uniqueReferralCode() {
   let code = makeReferralCode();
-  while (db.users.some((item) => item.referralCode === code)) {
+  while (db.users.some((item) => String(item.referralCode || "").trim().toUpperCase() === code)) {
     code = makeReferralCode();
   }
   return code;
+}
+
+function ensureUniqueReferralCodes() {
+  let changed = false;
+  const seen = new Set();
+  (db.users || []).forEach((user) => {
+    const code = String(user.referralCode || "").trim().toUpperCase();
+    if (code && !seen.has(code)) {
+      if (user.referralCode !== code) {
+        user.referralCode = code;
+        changed = true;
+      }
+      seen.add(code);
+      return;
+    }
+    user.referralCode = uniqueReferralCode();
+    seen.add(user.referralCode);
+    changed = true;
+  });
+  return changed;
 }
 
 function clientIp(req) {
@@ -1167,9 +1187,8 @@ let db = seed();
 
 function prepareDb(data) {
   db = data;
-  db.users.forEach((user) => {
-    if (!user.referralCode) user.referralCode = uniqueReferralCode();
-  });
+  const codesChanged = ensureUniqueReferralCodes();
+  if (codesChanged) saveDb();
   db.users.forEach((user) => {
     user.inviterPath = buildInviterPath(user);
     syncVipFromRecords(user);

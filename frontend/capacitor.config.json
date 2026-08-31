@@ -1,0 +1,8 @@
+{
+  "appId": "com.advault.tt",
+  "appName": "ADVAULT TT",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

@@ -3,13 +3,19 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "vite --port 5174 --strictPort",
-    "build": "vite build"
+    "build": "vite build",
+    "cap:sync": "vite build && npx cap sync android"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/core": "^8.5.0",
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
     "react": "latest",
-    "react-dom": "latest"
+    "react-dom": "latest",
+    "vite": "latest"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.0"
+  }
 }
