@@ -436,7 +436,7 @@ function getReferralSettings() {
   return {
     ...DEFAULT_REFERRAL_SETTINGS,
     ...stored,
-    signupInviter: 15,
+    signupInviter: roundMoney(stored.signupInviter ?? DEFAULT_REFERRAL_SETTINGS.signupInviter),
     levels
   };
 }
@@ -479,6 +479,50 @@ function addReferralRecord({ inviterId, invitedId, code, type, amount, beneficia
   };
   db.referrals.push(row);
   return row;
+}
+
+function hasCompletedSignupReferral(invitedId) {
+  return (db.referrals || []).some((item) => (
+    item.type === "signup"
+    && item.status === "completed"
+    && sameId(item.invitedId, invitedId)
+    && Number(item.level || 1) === 1
+  ));
+}
+
+function hasEarlierQualifiedApprovedDeposit(userId, currentRequestId) {
+  const minDeposit = Number(getWalletSettings().minDeposit || 0);
+  return (db.rechargeRequests || []).some((item) => (
+    sameId(item.userId, userId)
+    && Number(item.id) !== Number(currentRequestId)
+    && item.status === "approved"
+    && Number(item.amount || 0) >= minDeposit
+  ));
+}
+
+function grantSignupReferralIfQualified(invitedUser, request) {
+  if (!invitedUser?.referredBy || !request) return false;
+  if (request.status !== "approved") return false;
+  const minDeposit = Number(getWalletSettings().minDeposit || 0);
+  if (!(Number(request.amount || 0) >= minDeposit)) return false;
+  if (hasEarlierQualifiedApprovedDeposit(invitedUser.id, request.id)) return false;
+  if (hasCompletedSignupReferral(invitedUser.id)) return false;
+  const inviter = db.users.find((item) => sameId(item.id, invitedUser.referredBy));
+  if (!inviter || sameId(inviter.id, invitedUser.id)) return false;
+  const amount = Number(getReferralSettings().signupInviter);
+  if (!(amount > 0)) return false;
+  creditWallet(inviter, "referral", amount, `مكافأة دعوة مباشرة: انضمام ${invitedUser.name}`);
+  addReferralRecord({
+    inviterId: inviter.id,
+    invitedId: invitedUser.id,
+    code: inviter.referralCode,
+    type: "signup",
+    amount,
+    beneficiaryId: inviter.id,
+    note: `دعوة مباشرة ${invitedUser.name}`,
+    level: 1
+  });
+  return true;
 }
 
 function payNetworkCommissions(sourceUser, { type, baseAmount, notePrefix }) {
@@ -1151,7 +1195,7 @@ function normalizeDb(data) {
   data.adCreativeSet = normalizeAdCreativeSet(data.adCreativeSet);
   data.adSlotSettings = normalizeAdSlotSettings(data.adSlotSettings);
   data.tasks = data.tasks?.length ? data.tasks : defaults.tasks;
-  data.referralSettings = { ...DEFAULT_REFERRAL_SETTINGS, ...(data.referralSettings || {}), signupInviter: 15 };
+  data.referralSettings = { ...DEFAULT_REFERRAL_SETTINGS, ...(data.referralSettings || {}) };
   data.walletSettings = { ...DEFAULT_WALLET_SETTINGS, ...(data.walletSettings || {}) };
   data.walletSettings.minInvitesForWithdrawByUser = sanitizeInviteOverrideMap(data.walletSettings.minInvitesForWithdrawByUser);
   data.users = (data.users || []).map(migrateUser);
@@ -1535,17 +1579,6 @@ function registerHandler(req, res) {
 
   if (inviter) {
     const settings = getReferralSettings();
-    creditWallet(inviter, "referral", settings.signupInviter, `مكافأة دعوة مباشرة: انضمام ${user.name}`);
-    addReferralRecord({
-      inviterId: inviter.id,
-      invitedId: user.id,
-      code: ref,
-      type: "signup",
-      amount: settings.signupInviter,
-      beneficiaryId: inviter.id,
-      note: `دعوة مباشرة ${user.name}`,
-      level: 1
-    });
     creditWallet(user, "referral", settings.signupInvited, "هدية الانضمام عبر كود دعوة");
     addReferralRecord({
       inviterId: inviter.id,
@@ -2376,7 +2409,8 @@ app.get("/api/admin/referrals", authMiddleware, adminMiddleware, (req, res) => {
 
 app.patch("/api/admin/referral-settings", authMiddleware, adminMiddleware, (req, res) => {
   const current = getReferralSettings();
-  const signupInviter = 15;
+  const signupInviter = roundMoney(req.body?.signupInviter ?? current.signupInviter);
+  if (!(signupInviter >= 0)) return res.status(400).json({ error: "مكافأة الدعوة غير صالحة" });
   const signupInvited = roundMoney(req.body?.signupInvited ?? current.signupInvited);
   const maxLevels = Math.min(5, Math.max(1, Number(req.body?.maxLevels || current.maxLevels)));
   const levels = (req.body?.levels || current.levels).slice(0, maxLevels).map((item, index) => ({
@@ -2750,6 +2784,7 @@ app.post("/api/admin/recharges/:id/approve", authMiddleware, adminMiddleware, (r
   }
   request.status = "approved";
   request.processedAt = nowIso();
+  if (user) grantSignupReferralIfQualified(user, request);
   saveDb();
   audit("deposit_approve", { requestId: request.id, userId: request.userId, amount: request.amount });
   res.json(withUser(request));

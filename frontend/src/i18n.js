@@ -329,6 +329,7 @@ export const EN = {
   "إحصائيات الدعوات": "Referral stats",
   "مدفوع: {amount}": "Paid: {amount}",
   "إدارة مكافآت الدعوات": "Referral reward settings",
+  "مكافأة الدعوة": "Referral Signup Reward",
   "مكافأة الداعي المباشر (15 USDT)": "Direct inviter reward (15 USDT)",
   "عمولة VIP": "VIP commission",
   "مكافأة تسجيل شبكة": "Network signup bonus",

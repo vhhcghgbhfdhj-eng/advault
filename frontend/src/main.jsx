@@ -1573,7 +1573,7 @@ function Referral({ api, user, setError, setNotice }) {
       </div>
       <div className="card">
         <p className="metric-label">{t("مكافأة كل دعوة جديدة")}</p>
-        <div className="stat gold">{money(data.rewards?.signupInviter || 15)}</div>
+        <div className="stat gold">{money(data.rewards?.signupInviter ?? 15)}</div>
         <p className="muted">{t("هذه قيمة المكافأة وليست رصيدك")}</p>
       </div>
       <div className="card">
@@ -2845,8 +2845,8 @@ function Admin({ api, setError, setNotice, initialTab = "vip" }) {
           {rewardForm && (
             <form onSubmit={saveRewards} style={{ marginTop: 16 }}>
               <h3>إدارة مكافآت الدعوات</h3>
-              <label>مكافأة الداعي المباشر (15 USDT)</label>
-              <input type="number" step="0.01" value={15} readOnly />
+              <label>{t("مكافأة الدعوة")}</label>
+              <input type="number" step="0.01" min="0" value={rewardForm.signupInviter} onChange={(e) => setRewardForm({ ...rewardForm, signupInviter: e.target.value })} />
               <label>هدية المدعو</label>
               <input type="number" step="0.01" value={rewardForm.signupInvited} onChange={(e) => setRewardForm({ ...rewardForm, signupInvited: e.target.value })} />
               {(rewardForm.levels || []).map((item, index) => (
