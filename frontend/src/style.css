@@ -53,6 +53,25 @@ button, input, select, textarea {
   padding: 8px 12px calc(76px + env(safe-area-inset-bottom, 0px));
 }
 
+.app-update-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(8, 13, 32, 0.72);
+}
+
+.app-update-mask .card {
+  width: min(360px, 100%);
+}
+
+.app-update-mask button {
+  width: 100%;
+  margin-top: 8px;
+}
+
 .boot-screen, .auth-screen {
   min-height: 100vh;
   display: grid;

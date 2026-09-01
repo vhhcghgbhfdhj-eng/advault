@@ -367,7 +367,11 @@ export const EN = {
   "عمليات {name}": "Activity for {name}",
   "تعديل الرصيد": "Adjust balance",
   "السحب": "Withdrawals",
-  "الإيداع": "Deposits"
+  "الإيداع": "Deposits",
+  "يوجد تحديث جديد": "A new update is available",
+  "الإصدار {version}": "Version {version}",
+  "تحديث الآن": "Update now",
+  "لاحقًا": "Later"
 };
 
 export function translate(lang, text, vars) {

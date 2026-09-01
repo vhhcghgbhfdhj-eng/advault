@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { App as CapApp } from "@capacitor/app";
 import { Clipboard } from "@capacitor/clipboard";
 import "./style.css";
+import { checkNativeAppUpdate, openOfficialApk } from "./appUpdate.mjs";
 import { applyDocumentLang, displayVipName, formatDate, readLang, saveLang, translate } from "./i18n.js";
 
 const API = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://advault-elsg.onrender.com" : "http://127.0.0.1:3000");
@@ -533,6 +534,36 @@ function readPasswordResetParams() {
     email: fromPath.email || resetParam(params, "email"),
     code: fromPath.code || resetParam(params, "code")
   };
+}
+
+function AppUpdatePrompt() {
+  const { t } = useLang();
+  const [update, setUpdate] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    checkNativeAppUpdate()
+      .then((info) => {
+        if (!cancelled && info) setUpdate(info);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  if (!update) return null;
+
+  return (
+    <div className="app-update-mask" role="dialog" aria-modal="true">
+      <div className="card">
+        <h3>{t("يوجد تحديث جديد")}</h3>
+        <p>{t("الإصدار {version}", { version: update.latestVersion })}</p>
+        <button type="button" onClick={() => openOfficialApk(update.apkUrl)}>{t("تحديث الآن")}</button>
+        {update.optional !== false && (
+          <button type="button" className="ghost" onClick={() => setUpdate(null)}>{t("لاحقًا")}</button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function App() {
@@ -3505,4 +3536,4 @@ function Admin({ api, setError, setNotice, initialTab = "vip" }) {
 }
 
 listenForInviteLinks();
-createRoot(document.getElementById("root")).render(<LangProvider><App /></LangProvider>);
+createRoot(document.getElementById("root")).render(<LangProvider><AppUpdatePrompt /><App /></LangProvider>);
