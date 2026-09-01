@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { App as CapApp } from "@capacitor/app";
 import { Clipboard } from "@capacitor/clipboard";
@@ -574,6 +574,7 @@ function App() {
   const [page, setPage] = useState("home");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const pageRef = useRef("home");
 
   function currentUserId() {
     return Number(localStorage.getItem(ACCOUNT_KEY) || 0);
@@ -711,6 +712,24 @@ function App() {
     setNotice("");
     setPage(nextPage);
   }
+
+  useEffect(() => {
+    pageRef.current = page;
+  }, [page]);
+
+  useEffect(() => {
+    if (!user || !token) return undefined;
+    const listener = CapApp.addListener("backButton", () => {
+      if (pageRef.current !== "home") {
+        setPage("home");
+        return;
+      }
+      CapApp.minimizeApp().catch(() => {});
+    });
+    return () => {
+      listener.then((handle) => handle.remove()).catch(() => {});
+    };
+  }, [user, token]);
 
   if (isPasswordResetRoute() || isAdminRecoveryRoute()) {
     return <Auth onSuccess={loginSuccess} />;
