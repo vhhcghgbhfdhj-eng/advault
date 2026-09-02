@@ -655,7 +655,7 @@ function availableBalance(user) {
   return roundMoney((user.balance || 0) - pendingWithdrawTotal(user.id));
 }
 
-const EARNING_TYPES = new Set(["task_reward", "referral"]);
+const EARNING_TYPES = new Set(["task_reward", "referral", "deposit_bonus"]);
 
 function creditWallet(user, type, amount, note) {
   return recordTransaction(user, { type, amount, status: "approved", note });
@@ -706,6 +706,7 @@ function userFacingNote(tx) {
   }
   if (tx.type === "vip_gift") return "هدية تفعيل VIP";
   if (tx.type === "deposit") return "إيداع USDT";
+  if (tx.type === "deposit_bonus") return "مكافأة إيداع";
   if (tx.type === "withdraw") return "سحب USDT";
   if (tx.type === "admin_adjust") return "تحديث الرصيد";
   return String(tx.note || "").replace(/المشرف|الإدارة|admin/gi, "").trim();
@@ -786,6 +787,74 @@ function adsPerDayForLevel(level) {
   const n = Number(settings[String(level)]);
   if (Number.isFinite(n)) return n;
   return Number(getPackage(level)?.adsPerDay || 0);
+}
+
+function defaultAdRewardSettings() {
+  const out = {};
+  VIP_PACKAGES.forEach((pkg) => {
+    out[String(pkg.level)] = null;
+  });
+  return out;
+}
+
+function normalizeAdRewardSettings(raw) {
+  const out = defaultAdRewardSettings();
+  VIP_PACKAGES.forEach((pkg) => {
+    const key = String(pkg.level);
+    if (!raw || raw[key] == null || raw[key] === "") return;
+    const n = Number(raw[key]);
+    if (Number.isFinite(n) && n >= 0) out[key] = roundMoney(n);
+  });
+  return out;
+}
+
+function defaultDepositRewardSettings() {
+  const out = {};
+  VIP_PACKAGES.forEach((pkg) => {
+    out[String(pkg.level)] = 0;
+  });
+  return out;
+}
+
+function normalizeDepositRewardSettings(raw) {
+  const out = defaultDepositRewardSettings();
+  VIP_PACKAGES.forEach((pkg) => {
+    const key = String(pkg.level);
+    if (!raw || raw[key] == null || raw[key] === "") return;
+    const n = Number(raw[key]);
+    if (Number.isFinite(n) && n >= 0) out[key] = roundMoney(n);
+  });
+  return out;
+}
+
+function adRewardForLevel(level) {
+  const settings = db?.adRewardSettings || defaultAdRewardSettings();
+  const v = settings[String(level)];
+  if (v != null && Number.isFinite(Number(v))) return roundMoney(Math.max(0, Number(v)));
+  return randomAdReward();
+}
+
+function depositRewardForLevel(level) {
+  const settings = db?.depositRewardSettings || defaultDepositRewardSettings();
+  const n = Number(settings[String(level)]);
+  if (Number.isFinite(n) && n > 0) return roundMoney(n);
+  return 0;
+}
+
+function vipRewardSettingsPayload() {
+  const adRewardByLevel = normalizeAdRewardSettings(db.adRewardSettings);
+  const depositRewardByLevel = normalizeDepositRewardSettings(db.depositRewardSettings);
+  return {
+    adRewardByLevel,
+    depositRewardByLevel,
+    randomAdRewards: AD_REWARDS,
+    packages: VIP_PACKAGES.map((pkg) => ({
+      level: pkg.level,
+      name: pkg.name,
+      adReward: adRewardByLevel[String(pkg.level)],
+      depositReward: depositRewardByLevel[String(pkg.level)]
+    }))
+  };
 }
 
 function vipWithAdSlots(pkg) {
@@ -1090,7 +1159,9 @@ function seed() {
     adViews: [],
     adWatchSessions: [],
     adCreativeSet: { ...DEFAULT_AD_CREATIVE_SET, images: [] },
-    adSlotSettings: defaultAdSlotSettings()
+    adSlotSettings: defaultAdSlotSettings(),
+    adRewardSettings: defaultAdRewardSettings(),
+    depositRewardSettings: defaultDepositRewardSettings()
   };
 }
 
@@ -1194,6 +1265,8 @@ function normalizeDb(data) {
   data.adWatchSessions = data.adWatchSessions || [];
   data.adCreativeSet = normalizeAdCreativeSet(data.adCreativeSet);
   data.adSlotSettings = normalizeAdSlotSettings(data.adSlotSettings);
+  data.adRewardSettings = normalizeAdRewardSettings(data.adRewardSettings);
+  data.depositRewardSettings = normalizeDepositRewardSettings(data.depositRewardSettings);
   data.tasks = data.tasks?.length ? data.tasks : defaults.tasks;
   data.referralSettings = { ...DEFAULT_REFERRAL_SETTINGS, ...(data.referralSettings || {}) };
   data.walletSettings = { ...DEFAULT_WALLET_SETTINGS, ...(data.walletSettings || {}) };
@@ -2218,7 +2291,7 @@ app.post("/api/ads/:slot/complete", authMiddleware, identityGuard, (req, res) =>
   if (Date.now() < readyAt) {
     return res.status(400).json({ error: "لم تنته مدة المشاهدة بعد", remainingSec: publicAdWatch(session).remainingSec });
   }
-  const reward = randomAdReward();
+  const reward = adRewardForLevel(getActiveVipLevel(req.user));
   session.status = "completed";
   session.completedAt = nowIso();
   db.adViews.push({
@@ -2784,7 +2857,17 @@ app.post("/api/admin/recharges/:id/approve", authMiddleware, adminMiddleware, (r
   }
   request.status = "approved";
   request.processedAt = nowIso();
-  if (user) grantSignupReferralIfQualified(user, request);
+  if (user) {
+    const bonus = depositRewardForLevel(getActiveVipLevel(user));
+    if (bonus > 0) {
+      recordTransaction(user, {
+        type: "deposit_bonus",
+        amount: bonus,
+        note: `مكافأة إيداع ${getVip(user).name}`
+      });
+    }
+    grantSignupReferralIfQualified(user, request);
+  }
   saveDb();
   audit("deposit_approve", { requestId: request.id, userId: request.userId, amount: request.amount });
   res.json(withUser(request));
@@ -2799,6 +2882,21 @@ app.post("/api/admin/recharges/:id/reject", authMiddleware, adminMiddleware, (re
   request.processedAt = nowIso();
   saveDb();
   res.json(withUser(request));
+});
+
+app.get("/api/admin/vip-reward-settings", authMiddleware, adminMiddleware, (req, res) => {
+  res.json(vipRewardSettingsPayload());
+});
+
+app.patch("/api/admin/vip-reward-settings", authMiddleware, adminMiddleware, (req, res) => {
+  if (req.body?.adRewardByLevel && typeof req.body.adRewardByLevel === "object") {
+    db.adRewardSettings = normalizeAdRewardSettings(req.body.adRewardByLevel);
+  }
+  if (req.body?.depositRewardByLevel && typeof req.body.depositRewardByLevel === "object") {
+    db.depositRewardSettings = normalizeDepositRewardSettings(req.body.depositRewardByLevel);
+  }
+  saveDb();
+  res.json(vipRewardSettingsPayload());
 });
 
 app.get("/api/admin/ad-creatives", authMiddleware, adminMiddleware, (req, res) => {

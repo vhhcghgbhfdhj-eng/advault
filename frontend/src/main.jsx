@@ -202,6 +202,7 @@ function transactionTypeLabel(type, t = (value) => value) {
     vip_activation: t("تفعيل VIP"),
     vip_refund: t("استرداد VIP"),
     deposit: t("إيداع USDT"),
+    deposit_bonus: t("مكافأة إيداع"),
     withdraw: t("سحب USDT"),
     admin_adjust: t("تحديث الرصيد")
   }[type] || type;
@@ -1665,7 +1666,7 @@ function Referral({ api, user, setError, setNotice }) {
       </div>
       <div className="card">
         <p className="metric-label">{t("مكافأة كل دعوة جديدة")}</p>
-        <div className="stat gold">{money(data.rewards?.signupInviter ?? 15)}</div>
+        <div className="stat gold">{money(data.rewards?.signupInviter)}</div>
         <p className="muted">{t("هذه قيمة المكافأة وليست رصيدك")}</p>
       </div>
       <div className="card">
@@ -1786,10 +1787,6 @@ function Vip({ api, user, onDone, setError, setNotice }) {
         </div>
         <div className="home-balance-foot">
           <div>
-            <p className="metric-label">{t("الإعلانات اليومية")}</p>
-            <strong>{sub.adsPerDay ?? 0}</strong>
-          </div>
-          <div>
             <p className="metric-label">{t("قيمة الاشتراك")}</p>
             <strong>{activeVipLevel > 0 ? money(sub.price) : "—"}</strong>
           </div>
@@ -1820,7 +1817,6 @@ function Vip({ api, user, onDone, setError, setNotice }) {
               <div className="stat gold">{money(pkg.price)}</div>
             </div>
             <div className="vip-card-meta">
-              <span>{t("إعلانات يومية")} <b>{pkg.adsPerDay}</b></span>
               <span>{t("هدية التفعيل")} <b>{money(pkg.gift)}</b></span>
             </div>
             <button type="button" className={state.isCurrent ? "ghost" : "primary"} disabled={locked} onClick={() => requestVip(pkg.level)}>
@@ -2428,6 +2424,104 @@ function AdminUserPicker({ users, value, onChange }) {
   );
 }
 
+function AdminVipRewardSettings({ api, setError, setNotice, kind }) {
+  const { t } = useLang();
+  const [rows, setRows] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const isAds = kind === "ads";
+
+  async function loadRows() {
+    const data = await api("/api/admin/vip-reward-settings");
+    setRows((data.packages || []).map((item) => ({
+      level: item.level,
+      name: item.name,
+      adReward: item.adReward == null ? "" : String(item.adReward),
+      depositReward: String(item.depositReward ?? 0)
+    })));
+    setLoaded(true);
+  }
+
+  useEffect(() => {
+    loadRows().catch((err) => setError(err.message));
+  }, []);
+
+  async function save(e) {
+    e.preventDefault();
+    setError("");
+    setNotice("");
+    setSaving(true);
+    try {
+      const body = isAds
+        ? {
+          adRewardByLevel: Object.fromEntries(rows.map((item) => [
+            String(item.level),
+            item.adReward === "" ? null : Number(item.adReward)
+          ]))
+        }
+        : {
+          depositRewardByLevel: Object.fromEntries(rows.map((item) => [
+            String(item.level),
+            Number(item.depositReward)
+          ]))
+        };
+      const data = await api("/api/admin/vip-reward-settings", {
+        method: "PATCH",
+        body: JSON.stringify(body)
+      });
+      setRows((data.packages || []).map((item) => ({
+        level: item.level,
+        name: item.name,
+        adReward: item.adReward == null ? "" : String(item.adReward),
+        depositReward: String(item.depositReward ?? 0)
+      })));
+      setNotice(isAds ? t("تم حفظ مكافآت الإعلانات") : t("تم حفظ مكافآت الإيداع"));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!loaded) return <LoadingBlock />;
+
+  return (
+    <form className="card admin-block" onSubmit={save} style={{ marginTop: 12 }}>
+      <h2>{isAds ? t("مكافآت الإعلانات") : t("مكافآت الإيداع")}</h2>
+      <p className="muted">
+        {isAds
+          ? t("حدد قيمة مكافأة مشاهدة الإعلان لكل مستوى VIP بشكل مستقل. اترك الحقل فارغًا للإبقاء على المكافأة العشوائية الحالية.")
+          : t("حدد مكافأة الإيداع لكل مستوى VIP بشكل مستقل. القيمة الحالية 0 تعني عدم إضافة مكافأة فوق مبلغ الإيداع. تُستخدم القيم الجديدة في الإيداعات الجديدة بعد الحفظ.")}
+      </p>
+      {rows.map((item, index) => (
+        <label key={item.level}>
+          {item.name}
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            value={isAds ? item.adReward : item.depositReward}
+            placeholder={isAds ? t("عشوائي") : "0"}
+            onChange={(e) => {
+              const value = e.target.value;
+              setRows((prev) => prev.map((row, rowIndex) => (
+                rowIndex === index
+                  ? { ...row, [isAds ? "adReward" : "depositReward"]: value }
+                  : row
+              )));
+            }}
+          />
+        </label>
+      ))}
+      <div className="row">
+        <button type="submit" className="primary" disabled={saving}>
+          {isAds ? t("حفظ مكافآت الإعلانات") : t("حفظ مكافآت الإيداع")}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function AdminAdCreatives({ api, setError, setNotice }) {
   const { t } = useLang();
   const [enabled, setEnabled] = useState(true);
@@ -2857,7 +2951,10 @@ function Admin({ api, setError, setNotice, initialTab = "vip" }) {
         </div>
       )}
       {tab === "ads" && (
-        <AdminAdCreatives api={api} setError={setError} setNotice={setNotice} />
+        <>
+          <AdminAdCreatives api={api} setError={setError} setNotice={setNotice} />
+          <AdminVipRewardSettings api={api} setError={setError} setNotice={setNotice} kind="ads" />
+        </>
       )}
       {tab === "support" && (
         <div className="card" style={{ marginTop: 12 }}>
@@ -2937,8 +3034,9 @@ function Admin({ api, setError, setNotice, initialTab = "vip" }) {
           {rewardForm && (
             <form onSubmit={saveRewards} style={{ marginTop: 16 }}>
               <h3>إدارة مكافآت الدعوات</h3>
-              <label>{t("مكافأة الدعوة")}</label>
+              <label>{t("مكافأة الدعوة المباشرة")}</label>
               <input type="number" step="0.01" min="0" value={rewardForm.signupInviter} onChange={(e) => setRewardForm({ ...rewardForm, signupInviter: e.target.value })} />
+              <p className="muted">{t("هذه مكافأة 15 UTT الافتراضية للداعي المباشر. تُستخدم القيمة المحفوظة في العمليات الجديدة.")}</p>
               <label>هدية المدعو</label>
               <input type="number" step="0.01" value={rewardForm.signupInvited} onChange={(e) => setRewardForm({ ...rewardForm, signupInvited: e.target.value })} />
               {(rewardForm.levels || []).map((item, index) => (
@@ -3036,6 +3134,7 @@ function Admin({ api, setError, setNotice, initialTab = "vip" }) {
         <div className="card" style={{ marginTop: 12 }}>
           <h2>إدارة محفظة USDT</h2>
           <p className="muted">المحفظة داخلية فقط. لا يتم توليد عناوين عملات للمستخدمين. الإيداع والسداد الخارجي يتم يدوياً من محفظة الشركة.</p>
+          <AdminVipRewardSettings api={api} setError={setError} setNotice={setNotice} kind="deposit" />
           {walletSettings && (
             <form onSubmit={saveWalletSettings}>
               <h3>محفظة الشركة</h3>
