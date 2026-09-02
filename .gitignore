@@ -8,6 +8,9 @@ node_modules/
 *.pem
 *.key
 *.p12
+*.jks
+*.keystore
+keystore.properties
 credentials.json
 secrets.json
 backend/.admin-new-email
