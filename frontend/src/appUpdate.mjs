@@ -40,11 +40,11 @@ export async function checkNativeAppUpdate(adapters = {}) {
   const getInfo = adapters.getInfo || (() => CapApp.getInfo());
   const request = adapters.request || ((url) => CapacitorHttp.get({
     url,
-    headers: { Accept: "application/json" }
+    headers: { Accept: "application/json", "Cache-Control": "no-cache" }
   }));
 
   const info = await getInfo();
-  const res = await request(APP_VERSION_URL);
+  const res = await request(`${APP_VERSION_URL}?t=${Date.now()}`);
   const status = Number(res?.status || 0);
   if (status < 200 || status >= 300) return null;
 

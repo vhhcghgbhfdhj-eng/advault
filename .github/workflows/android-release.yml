@@ -1,0 +1,97 @@
+name: Android release
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/android-release.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout app
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Next version
+        id: ver
+        working-directory: frontend
+        run: |
+          eval "$(node scripts/next-android-version.mjs)"
+          echo "code=$ADVAULT_VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "name=$ADVAULT_VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "Next Android version $ADVAULT_VERSION_NAME ($ADVAULT_VERSION_CODE)"
+
+      - name: Install frontend
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build web and sync Capacitor
+        working-directory: frontend
+        run: npm run cap:sync
+
+      - name: Decode release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "Missing GitHub secret ANDROID_KEYSTORE_BASE64"
+            exit 1
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$HOME/advault-release.jks"
+
+      - name: Assemble signed release APK
+        working-directory: frontend/android
+        env:
+          ADVAULT_VERSION_CODE: ${{ steps.ver.outputs.code }}
+          ADVAULT_VERSION_NAME: ${{ steps.ver.outputs.name }}
+          ADVAULT_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ADVAULT_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ADVAULT_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          export ADVAULT_KEYSTORE_FILE="$HOME/advault-release.jks"
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Publish APK to landing downloads
+        env:
+          LANDING_DEPLOY_TOKEN: ${{ secrets.LANDING_DEPLOY_TOKEN }}
+          ADVAULT_VERSION_CODE: ${{ steps.ver.outputs.code }}
+          ADVAULT_VERSION_NAME: ${{ steps.ver.outputs.name }}
+        run: |
+          if [ -z "$LANDING_DEPLOY_TOKEN" ]; then
+            echo "Missing GitHub secret LANDING_DEPLOY_TOKEN"
+            exit 1
+          fi
+          APK="frontend/android/app/build/outputs/apk/release/app-release.apk"
+          git clone --depth 1 "https://x-access-token:${LANDING_DEPLOY_TOKEN}@github.com/vhhcghgbhfdhj-eng/ADVAULT_TT_landing.git" landing-src
+          cp "$APK" landing-src/downloads/advault-tt.apk
+          node frontend/scripts/write-app-version.mjs landing-src/downloads/app-version.json
+          cd landing-src
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add downloads/advault-tt.apk downloads/app-version.json
+          git commit -m "Publish Android ${ADVAULT_VERSION_NAME} (${ADVAULT_VERSION_CODE})."
+          git push origin HEAD:master

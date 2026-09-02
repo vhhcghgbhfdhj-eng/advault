@@ -9,6 +9,18 @@ if (keystorePropertiesFile != null) {
     keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
 }
 
+def envVersionCode = System.getenv("ADVAULT_VERSION_CODE")
+def envVersionName = System.getenv("ADVAULT_VERSION_NAME")
+def envKeystoreFile = System.getenv("ADVAULT_KEYSTORE_FILE")
+def envStorePassword = System.getenv("ADVAULT_KEYSTORE_PASSWORD")
+def envKeyPassword = System.getenv("ADVAULT_KEY_PASSWORD")
+def envKeyAlias = System.getenv("ADVAULT_KEY_ALIAS")
+int resolvedVersionCode = 1
+if (envVersionCode != null && envVersionCode.trim().isInteger()) {
+    resolvedVersionCode = envVersionCode.trim().toInteger()
+}
+def resolvedVersionName = (envVersionName != null && !envVersionName.trim().isEmpty()) ? envVersionName.trim() : "1.0"
+
 android {
     namespace = "com.advault.tt"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -16,8 +28,8 @@ android {
         applicationId "com.advault.tt"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode resolvedVersionCode
+        versionName resolvedVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -27,12 +39,15 @@ android {
     }
     signingConfigs {
         release {
-            if (keystoreProperties['storePassword'] && keystoreProperties['keyPassword']) {
-                def configuredStore = keystoreProperties['storeFile']
+            def storePasswordValue = envStorePassword ?: keystoreProperties['storePassword']
+            def keyPasswordValue = envKeyPassword ?: keystoreProperties['keyPassword']
+            def keyAliasValue = (envKeyAlias != null && !envKeyAlias.trim().isEmpty()) ? envKeyAlias.trim() : (keystoreProperties['keyAlias'] ?: "advault-release")
+            if (storePasswordValue && keyPasswordValue) {
+                def configuredStore = (envKeystoreFile != null && !envKeystoreFile.trim().isEmpty()) ? envKeystoreFile.trim() : keystoreProperties['storeFile']
                 storeFile configuredStore ? file(configuredStore) : file("${System.getProperty('user.home')}/ADVAULT_KEYS/advault-release.jks")
-                storePassword keystoreProperties['storePassword']
-                keyAlias keystoreProperties['keyAlias'] ?: "advault-release"
-                keyPassword keystoreProperties['keyPassword']
+                storePassword storePasswordValue
+                keyAlias keyAliasValue
+                keyPassword keyPasswordValue
             }
         }
     }
