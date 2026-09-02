@@ -445,7 +445,11 @@ function readInviteRef() {
   return normalizeInviteCode(resetParam(resetSearchParams(), "ref")) || storedInviteRef();
 }
 
+let inviteClipboardReadOnce = false;
+
 async function captureInviteRefFromClipboard() {
+  if (inviteClipboardReadOnce) return "";
+  inviteClipboardReadOnce = true;
   if (readInviteRef()) return "";
   let raw = "";
   try {
@@ -462,14 +466,44 @@ async function captureInviteRefFromClipboard() {
   return captureInviteRefFromHref(`https://advault-tt-landing.onrender.com/?ref=${encodeURIComponent(code)}`);
 }
 
+function scheduleCaptureInviteRefFromClipboard(onDone) {
+  let cancelled = false;
+  let settleId = 0;
+  const fallbackId = window.setTimeout(run, 2500);
+
+  function run() {
+    if (cancelled) return;
+    window.clearTimeout(fallbackId);
+    window.clearTimeout(settleId);
+    window.removeEventListener("pointerup", afterFirstGesture, true);
+    window.removeEventListener("keyup", afterFirstGesture, true);
+    captureInviteRefFromClipboard().then(() => { if (!cancelled) onDone?.(); }).catch(() => { if (!cancelled) onDone?.(); });
+  }
+
+  function afterFirstGesture() {
+    window.removeEventListener("pointerup", afterFirstGesture, true);
+    window.removeEventListener("keyup", afterFirstGesture, true);
+    window.clearTimeout(fallbackId);
+    settleId = window.setTimeout(run, 800);
+  }
+
+  window.addEventListener("pointerup", afterFirstGesture, true);
+  window.addEventListener("keyup", afterFirstGesture, true);
+
+  return () => {
+    cancelled = true;
+    window.clearTimeout(fallbackId);
+    window.clearTimeout(settleId);
+    window.removeEventListener("pointerup", afterFirstGesture, true);
+    window.removeEventListener("keyup", afterFirstGesture, true);
+  };
+}
+
 function listenForInviteLinks() {
   captureInviteRefFromHref(window.location.href);
   CapApp.getLaunchUrl().then((launch) => {
     if (launch?.url) captureInviteRefFromHref(launch.url);
   }).catch(() => {});
-  window.setTimeout(() => {
-    captureInviteRefFromClipboard().catch(() => {});
-  }, 500);
   CapApp.addListener("appUrlOpen", (event) => {
     if (event?.url) captureInviteRefFromHref(event.url);
   }).catch(() => {});
@@ -542,12 +576,17 @@ function AppUpdatePrompt() {
 
   useEffect(() => {
     let cancelled = false;
-    checkNativeAppUpdate()
-      .then((info) => {
-        if (!cancelled && info) setUpdate(info);
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
+    const timer = window.setTimeout(() => {
+      checkNativeAppUpdate()
+        .then((info) => {
+          if (!cancelled && info) setUpdate(info);
+        })
+        .catch(() => {});
+    }, 3000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, []);
 
   if (!update) return null;
@@ -822,9 +861,12 @@ function Auth({ onSuccess }) {
       setForm((current) => (current.referralCode === code ? current : { ...current, referralCode: code }));
     }
     applyInviteRef();
-    captureInviteRefFromClipboard().then(applyInviteRef).catch(() => applyInviteRef());
+    const stopClipboard = scheduleCaptureInviteRefFromClipboard(applyInviteRef);
     window.addEventListener(INVITE_REF_EVENT, applyInviteRef);
-    return () => window.removeEventListener(INVITE_REF_EVENT, applyInviteRef);
+    return () => {
+      stopClipboard();
+      window.removeEventListener(INVITE_REF_EVENT, applyInviteRef);
+    };
   }, []);
 
   function change(e) {
