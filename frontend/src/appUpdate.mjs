@@ -1,5 +1,7 @@
-import { Capacitor, CapacitorHttp } from "@capacitor/core";
+import { Capacitor, CapacitorHttp, registerPlugin } from "@capacitor/core";
 import { App as CapApp } from "@capacitor/app";
+
+const AppUpdateInstaller = registerPlugin("AppUpdateInstaller");
 
 export const OFFICIAL_APK_URL = "https://advault-tt-landing.onrender.com/downloads/advault-tt.apk";
 export const APP_VERSION_URL = "https://advault-tt-landing.onrender.com/downloads/app-version.json";
@@ -115,11 +117,41 @@ export async function checkNativeAppUpdate(adapters = {}) {
   };
 }
 
-export async function openOfficialApk(url = OFFICIAL_APK_URL) {
+export function formatDownloadProgress(received, total) {
+  const mb = (value) => (Number(value || 0) / (1024 * 1024)).toFixed(2);
+  if (Number(total) > 0) return `${mb(received)} / ${mb(total)} MB`;
+  return `${mb(received)} MB`;
+}
+
+function isNativePlatform(adapters = {}) {
+  if (typeof adapters.isNative === "function") return adapters.isNative();
+  return typeof Capacitor?.isNativePlatform === "function" && Capacitor.isNativePlatform();
+}
+
+export async function openOfficialApk(url = OFFICIAL_APK_URL, adapters = {}) {
   const target = String(url || OFFICIAL_APK_URL);
+  const onProgress = adapters.onProgress;
+  if (typeof adapters.install === "function") {
+    return adapters.install(target, onProgress);
+  }
+  if (!isNativePlatform(adapters)) {
+    if (typeof window !== "undefined") window.open(target, "_blank", "noopener,noreferrer");
+    return;
+  }
+
+  const installer = adapters.installer || AppUpdateInstaller;
+  let handle;
   try {
-    await CapApp.openUrl({ url: target });
-  } catch {
-    window.open(target, "_blank", "noopener,noreferrer");
+    if (onProgress && typeof installer?.addListener === "function") {
+      handle = await installer.addListener("progress", (event) => onProgress(event || {}));
+    }
+    if (typeof installer?.downloadAndInstall !== "function") {
+      throw new Error("مثبّت التحديث غير متوفر");
+    }
+    onProgress?.({ received: 0, total: 0, phase: "downloading" });
+    await installer.downloadAndInstall({ url: target });
+    onProgress?.({ phase: "installing" });
+  } finally {
+    if (handle && typeof handle.remove === "function") await handle.remove();
   }
 }

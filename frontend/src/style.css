@@ -72,6 +72,20 @@ button, input, select, textarea {
   margin-top: 8px;
 }
 
+.app-update-progress {
+  height: 8px;
+  margin: 8px 0 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.app-update-progress span {
+  display: block;
+  height: 100%;
+  background: #7dd3fc;
+}
+
 .boot-screen, .auth-screen {
   min-height: 100vh;
   display: grid;

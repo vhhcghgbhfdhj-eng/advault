@@ -4,7 +4,9 @@ import {
   OFFICIAL_APK_URL,
   compareVersionNames,
   isNewerAppRelease,
-  checkNativeAppUpdate
+  checkNativeAppUpdate,
+  formatDownloadProgress,
+  openOfficialApk
 } from "../src/appUpdate.mjs";
 
 assert.equal(OFFICIAL_APK_URL, "https://advault-tt-landing.onrender.com/downloads/advault-tt.apk");
@@ -63,5 +65,38 @@ const alreadyLatest = await checkNativeAppUpdate({
   request: async () => ({ status: 200, data: { latestVersion: "1.0.3", latestBuild: 3, optional: true, apkUrl: OFFICIAL_APK_URL } })
 });
 assert.equal(alreadyLatest, null);
+
+assert.equal(formatDownloadProgress(3690988, 3690988), "3.52 / 3.52 MB");
+assert.equal(formatDownloadProgress(1024 * 1024, 0), "1.00 MB");
+
+let installed = "";
+let lastPhase = "";
+await openOfficialApk(OFFICIAL_APK_URL, {
+  isNative: () => true,
+  install: async (url, onProgress) => {
+    installed = url;
+    onProgress?.({ received: 3512320, total: 3512320, phase: "downloading" });
+    onProgress?.({ received: 3512320, total: 3512320, phase: "installing" });
+    lastPhase = "installing";
+  },
+  onProgress: (event) => { lastPhase = event.phase; }
+});
+assert.equal(installed, OFFICIAL_APK_URL);
+assert.equal(lastPhase, "installing");
+
+let nativeInstallCalled = false;
+await openOfficialApk(OFFICIAL_APK_URL, {
+  isNative: () => true,
+  installer: {
+    addListener: async (_name, cb) => {
+      cb({ received: 100, total: 100, phase: "downloading" });
+      return { remove: async () => {} };
+    },
+    downloadAndInstall: async ({ url }) => {
+      nativeInstallCalled = url === OFFICIAL_APK_URL;
+    }
+  }
+});
+assert.equal(nativeInstallCalled, true);
 
 console.log("app-update checks passed");

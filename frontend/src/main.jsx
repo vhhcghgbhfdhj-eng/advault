@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { App as CapApp } from "@capacitor/app";
 import { Clipboard } from "@capacitor/clipboard";
 import "./style.css";
-import { checkNativeAppUpdate, openOfficialApk } from "./appUpdate.mjs";
+import { checkNativeAppUpdate, formatDownloadProgress, openOfficialApk } from "./appUpdate.mjs";
 import { applyDocumentLang, displayVipName, formatDate, readLang, saveLang, translate } from "./i18n.js";
 
 const API = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://advault-elsg.onrender.com" : "http://127.0.0.1:3000");
@@ -594,6 +594,9 @@ scheduleNativeAppUpdateChecks();
 function AppUpdatePrompt() {
   const { t, lang } = useLang();
   const [update, setUpdate] = useState(pendingAppUpdate);
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(null);
+  const [installError, setInstallError] = useState("");
 
   useEffect(() => {
     function onUpdate(event) {
@@ -607,15 +610,49 @@ function AppUpdatePrompt() {
 
   if (!update) return null;
 
+  const received = Number(progress?.received || 0);
+  const total = Number(progress?.total || 0);
+  const percent = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : (progress?.phase === "installing" ? 100 : 0);
+
+  async function startUpdate() {
+    if (busy) return;
+    setBusy(true);
+    setInstallError("");
+    setProgress({ received: 0, total: 0, phase: "downloading" });
+    try {
+      await openOfficialApk(update.apkUrl, {
+        onProgress: (event) => setProgress(event || {})
+      });
+    } catch (err) {
+      setInstallError(err?.message || t("تعذر تثبيت التحديث"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="app-update-mask" role="dialog" aria-modal="true">
       <div className="card">
         <h3>{t("يوجد تحديث جديد")}</h3>
         <p>{t("الإصدار {version}", { version: update.latestVersion })}</p>
-        <button type="button" onClick={() => openOfficialApk(update.apkUrl)}>
-          {lang === "en" ? "Update now" : "تحديث الآن · Update now"}
+        {busy && (
+          <>
+            <p className="muted">
+              {progress?.phase === "installing"
+                ? t("جاري فتح مثبّت Android...")
+                : t("جاري تنزيل التحديث...")}
+            </p>
+            <p>{formatDownloadProgress(received, total)}</p>
+            <div className="app-update-progress" aria-hidden="true">
+              <span style={{ width: `${percent}%` }} />
+            </div>
+          </>
+        )}
+        {installError ? <p className="error">{installError}</p> : null}
+        <button type="button" onClick={startUpdate} disabled={busy}>
+          {busy ? t("جاري التحميل...") : (lang === "en" ? "Download" : "تحميل")}
         </button>
-        {update.optional !== false && (
+        {update.optional !== false && !busy && (
           <button type="button" className="ghost" onClick={() => setUpdate(null)}>{t("لاحقًا")}</button>
         )}
       </div>

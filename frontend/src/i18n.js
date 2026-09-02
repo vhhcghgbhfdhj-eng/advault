@@ -392,6 +392,10 @@ export const EN = {
   "يوجد تحديث جديد": "A new update is available",
   "الإصدار {version}": "Version {version}",
   "تحديث الآن": "Update now",
+  "تحميل": "Download",
+  "جاري تنزيل التحديث...": "Downloading update...",
+  "جاري فتح مثبّت Android...": "Opening the Android installer...",
+  "تعذر تثبيت التحديث": "Could not install the update",
   "لاحقًا": "Later"
 };
 
