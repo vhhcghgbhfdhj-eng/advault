@@ -1574,6 +1574,20 @@ app.get("/", (req, res) => {
   res.json({ name: "ADVAULT TT API", status: "running" });
 });
 
+app.get("/api/app-version", async (_req, res) => {
+  try {
+    const r = await fetch(`${"https://advault-tt-landing.onrender.com/downloads/app-version.json"}?t=${Date.now()}`, {
+      headers: { Accept: "application/json", "Cache-Control": "no-cache" }
+    });
+    if (!r.ok) return res.status(502).json({ error: "تعذر قراءة الإصدار" });
+    const data = await r.json();
+    if (!data || typeof data !== "object") return res.status(502).json({ error: "تعذر قراءة الإصدار" });
+    return res.json(data);
+  } catch {
+    return res.status(502).json({ error: "تعذر قراءة الإصدار" });
+  }
+});
+
 function sendJson(res, status, body) {
   if (res.headersSent) return;
   res.status(status).json(body && typeof body === "object" ? body : { error: "تعذر إتمام الطلب" });

@@ -43,4 +43,25 @@ const failed = await checkNativeAppUpdate({
 });
 assert.equal(failed, null);
 
+const missingInfo = await checkNativeAppUpdate({
+  isNative: () => true,
+  getInfo: async () => { throw new Error("plugin"); },
+  request: async () => ({ status: 200, data: { latestVersion: "1.0.3", latestBuild: 3, optional: true, apkUrl: OFFICIAL_APK_URL } })
+});
+assert.equal(missingInfo.latestVersion, "1.0.3");
+
+const byVersionCode = await checkNativeAppUpdate({
+  isNative: () => true,
+  getInfo: async () => ({ version: "1.0", versionCode: 1 }),
+  request: async () => ({ status: 200, data: { latestVersion: "1.0.3", latestBuild: 3, optional: true, apkUrl: OFFICIAL_APK_URL } })
+});
+assert.equal(byVersionCode.latestVersion, "1.0.3");
+
+const alreadyLatest = await checkNativeAppUpdate({
+  isNative: () => true,
+  getInfo: async () => ({ version: "1.0.3", build: "3" }),
+  request: async () => ({ status: 200, data: { latestVersion: "1.0.3", latestBuild: 3, optional: true, apkUrl: OFFICIAL_APK_URL } })
+});
+assert.equal(alreadyLatest, null);
+
 console.log("app-update checks passed");

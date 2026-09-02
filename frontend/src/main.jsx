@@ -571,23 +571,38 @@ function readPasswordResetParams() {
   };
 }
 
+let pendingAppUpdate = null;
+
+function applyPendingAppUpdate(info) {
+  if (!info) return;
+  pendingAppUpdate = info;
+  window.dispatchEvent(new CustomEvent("advault-app-update", { detail: info }));
+}
+
+function scheduleNativeAppUpdateChecks() {
+  const run = () => {
+    checkNativeAppUpdate({ apiBase: API })
+      .then(applyPendingAppUpdate)
+      .catch(() => {});
+  };
+  run();
+  window.setTimeout(run, 4000);
+  window.setTimeout(run, 20000);
+}
+scheduleNativeAppUpdateChecks();
+
 function AppUpdatePrompt() {
-  const { t } = useLang();
-  const [update, setUpdate] = useState(null);
+  const { t, lang } = useLang();
+  const [update, setUpdate] = useState(pendingAppUpdate);
 
   useEffect(() => {
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      checkNativeAppUpdate()
-        .then((info) => {
-          if (!cancelled && info) setUpdate(info);
-        })
-        .catch(() => {});
-    }, 3000);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
+    function onUpdate(event) {
+      const info = event?.detail || pendingAppUpdate;
+      if (info) setUpdate(info);
+    }
+    window.addEventListener("advault-app-update", onUpdate);
+    if (pendingAppUpdate) setUpdate(pendingAppUpdate);
+    return () => window.removeEventListener("advault-app-update", onUpdate);
   }, []);
 
   if (!update) return null;
@@ -597,7 +612,9 @@ function AppUpdatePrompt() {
       <div className="card">
         <h3>{t("يوجد تحديث جديد")}</h3>
         <p>{t("الإصدار {version}", { version: update.latestVersion })}</p>
-        <button type="button" onClick={() => openOfficialApk(update.apkUrl)}>{t("تحديث الآن")}</button>
+        <button type="button" onClick={() => openOfficialApk(update.apkUrl)}>
+          {lang === "en" ? "Update now" : "تحديث الآن · Update now"}
+        </button>
         {update.optional !== false && (
           <button type="button" className="ghost" onClick={() => setUpdate(null)}>{t("لاحقًا")}</button>
         )}
@@ -3696,4 +3713,4 @@ function Admin({ api, setError, setNotice, initialTab = "vip" }) {
 }
 
 listenForInviteLinks();
-createRoot(document.getElementById("root")).render(<LangProvider><AppUpdatePrompt /><App /></LangProvider>);
+createRoot(document.getElementById("root")).render(<LangProvider><App /><AppUpdatePrompt /></LangProvider>);
