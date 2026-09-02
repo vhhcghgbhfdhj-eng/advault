@@ -56,23 +56,48 @@ jobs:
       - name: Decode release keystore
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+          set -euo pipefail
+          if [ -z "${ANDROID_KEYSTORE_BASE64:-}" ]; then
             echo "Missing GitHub secret ANDROID_KEYSTORE_BASE64"
             exit 1
           fi
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$HOME/advault-release.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$HOME/advault-release.jks"
+          test -s "$HOME/advault-release.jks"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          def clean(value):
+              return str(value or "").replace("\r", "").replace("\n", "")
+          alias = clean(os.environ.get("ANDROID_KEY_ALIAS")) or "advault-release"
+          Path("frontend/android/keystore.properties").write_text(
+              "\n".join([
+                  f"storeFile={Path.home() / 'advault-release.jks'}",
+                  f"storePassword={clean(os.environ.get('ANDROID_KEYSTORE_PASSWORD'))}",
+                  f"keyAlias={alias}",
+                  f"keyPassword={clean(os.environ.get('ANDROID_KEY_PASSWORD'))}",
+                  ""
+              ]),
+              encoding="utf-8",
+          )
+          print("keystore_bytes", (Path.home() / "advault-release.jks").stat().st_size)
+          PY
 
       - name: Assemble signed release APK
         working-directory: frontend/android
         env:
           ADVAULT_VERSION_CODE: ${{ steps.ver.outputs.code }}
           ADVAULT_VERSION_NAME: ${{ steps.ver.outputs.name }}
+          ADVAULT_KEYSTORE_FILE: /home/runner/advault-release.jks
           ADVAULT_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ADVAULT_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           ADVAULT_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          export ADVAULT_KEYSTORE_FILE="$HOME/advault-release.jks"
+          set -euo pipefail
+          chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
 
       - name: Publish APK to landing downloads
