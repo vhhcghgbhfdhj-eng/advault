@@ -841,18 +841,47 @@ function depositRewardForLevel(level) {
   return 0;
 }
 
+function defaultVipActivationRewardSettings() {
+  const out = {};
+  VIP_PACKAGES.forEach((pkg) => {
+    out[String(pkg.level)] = roundMoney(pkg.gift);
+  });
+  return out;
+}
+
+function normalizeVipActivationRewardSettings(raw) {
+  const out = defaultVipActivationRewardSettings();
+  VIP_PACKAGES.forEach((pkg) => {
+    const key = String(pkg.level);
+    if (!raw || raw[key] == null || raw[key] === "") return;
+    const n = Number(raw[key]);
+    if (Number.isFinite(n) && n >= 0) out[key] = roundMoney(n);
+  });
+  return out;
+}
+
+function vipActivationRewardForLevel(level) {
+  const settings = db?.vipActivationRewardSettings || defaultVipActivationRewardSettings();
+  const n = Number(settings[String(level)]);
+  if (Number.isFinite(n) && n >= 0) return roundMoney(n);
+  return roundMoney(getPackage(level)?.gift || 0);
+}
+
 function vipRewardSettingsPayload() {
   const adRewardByLevel = normalizeAdRewardSettings(db.adRewardSettings);
   const depositRewardByLevel = normalizeDepositRewardSettings(db.depositRewardSettings);
+  const activationRewardByLevel = normalizeVipActivationRewardSettings(db.vipActivationRewardSettings);
   return {
     adRewardByLevel,
     depositRewardByLevel,
+    activationRewardByLevel,
     randomAdRewards: AD_REWARDS,
     packages: VIP_PACKAGES.map((pkg) => ({
       level: pkg.level,
       name: pkg.name,
       adReward: adRewardByLevel[String(pkg.level)],
-      depositReward: depositRewardByLevel[String(pkg.level)]
+      depositReward: depositRewardByLevel[String(pkg.level)],
+      activationReward: activationRewardByLevel[String(pkg.level)]
     }))
   };
 }
@@ -1161,7 +1190,8 @@ function seed() {
     adCreativeSet: { ...DEFAULT_AD_CREATIVE_SET, images: [] },
     adSlotSettings: defaultAdSlotSettings(),
     adRewardSettings: defaultAdRewardSettings(),
-    depositRewardSettings: defaultDepositRewardSettings()
+    depositRewardSettings: defaultDepositRewardSettings(),
+    vipActivationRewardSettings: defaultVipActivationRewardSettings()
   };
 }
 
@@ -1267,6 +1297,7 @@ function normalizeDb(data) {
   data.adSlotSettings = normalizeAdSlotSettings(data.adSlotSettings);
   data.adRewardSettings = normalizeAdRewardSettings(data.adRewardSettings);
   data.depositRewardSettings = normalizeDepositRewardSettings(data.depositRewardSettings);
+  data.vipActivationRewardSettings = normalizeVipActivationRewardSettings(data.vipActivationRewardSettings);
   data.tasks = data.tasks?.length ? data.tasks : defaults.tasks;
   data.referralSettings = { ...DEFAULT_REFERRAL_SETTINGS, ...(data.referralSettings || {}) };
   data.walletSettings = { ...DEFAULT_WALLET_SETTINGS, ...(data.walletSettings || {}) };
@@ -2343,6 +2374,7 @@ app.get("/api/vip", authMiddleware, identityGuard, (req, res) => {
     const canUpgrade = currentLevel > 0 && level > currentLevel;
     return {
       ...vipWithAdSlots(pkg),
+      gift: vipActivationRewardForLevel(level),
       isCurrent,
       isPrevious: false,
       isLower,
@@ -2426,7 +2458,7 @@ app.post("/api/vip/:level/request", authMiddleware, identityGuard, (req, res) =>
     previousVipLevel: currentLevel,
     previousVipPrice: currentLevel > 0 ? Number(req.user.vipPrice || 0) : 0,
     previousVipName: currentLevel > 0 ? getVip(req.user).name : null,
-    gift: pkg.gift,
+    gift: vipActivationRewardForLevel(pkg.level),
     status: "pending",
     activationDate: null,
     createdAt: nowIso(),
@@ -2908,6 +2940,9 @@ app.patch("/api/admin/vip-reward-settings", authMiddleware, adminMiddleware, (re
   }
   if (req.body?.depositRewardByLevel && typeof req.body.depositRewardByLevel === "object") {
     db.depositRewardSettings = normalizeDepositRewardSettings(req.body.depositRewardByLevel);
+  }
+  if (req.body?.activationRewardByLevel && typeof req.body.activationRewardByLevel === "object") {
+    db.vipActivationRewardSettings = normalizeVipActivationRewardSettings(req.body.activationRewardByLevel);
   }
   saveDb();
   res.json(vipRewardSettingsPayload());

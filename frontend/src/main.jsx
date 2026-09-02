@@ -2447,15 +2447,22 @@ function AdminVipRewardSettings({ api, setError, setNotice, kind }) {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const isAds = kind === "ads";
+  const isActivation = kind === "activation";
+  const valueKey = isAds ? "adReward" : isActivation ? "activationReward" : "depositReward";
 
-  async function loadRows() {
-    const data = await api("/api/admin/vip-reward-settings");
-    setRows((data.packages || []).map((item) => ({
+  function mapRows(packages) {
+    return (packages || []).map((item) => ({
       level: item.level,
       name: item.name,
       adReward: item.adReward == null ? "" : String(item.adReward),
-      depositReward: String(item.depositReward ?? 0)
-    })));
+      depositReward: String(item.depositReward ?? 0),
+      activationReward: String(item.activationReward ?? 0)
+    }));
+  }
+
+  async function loadRows() {
+    const data = await api("/api/admin/vip-reward-settings");
+    setRows(mapRows(data.packages));
     setLoaded(true);
   }
 
@@ -2476,23 +2483,31 @@ function AdminVipRewardSettings({ api, setError, setNotice, kind }) {
             item.adReward === "" ? null : Number(item.adReward)
           ]))
         }
-        : {
-          depositRewardByLevel: Object.fromEntries(rows.map((item) => [
-            String(item.level),
-            Number(item.depositReward)
-          ]))
-        };
+        : isActivation
+          ? {
+            activationRewardByLevel: Object.fromEntries(rows.map((item) => [
+              String(item.level),
+              Number(item.activationReward)
+            ]))
+          }
+          : {
+            depositRewardByLevel: Object.fromEntries(rows.map((item) => [
+              String(item.level),
+              Number(item.depositReward)
+            ]))
+          };
       const data = await api("/api/admin/vip-reward-settings", {
         method: "PATCH",
         body: JSON.stringify(body)
       });
-      setRows((data.packages || []).map((item) => ({
-        level: item.level,
-        name: item.name,
-        adReward: item.adReward == null ? "" : String(item.adReward),
-        depositReward: String(item.depositReward ?? 0)
-      })));
-      setNotice(isAds ? t("تم حفظ مكافآت الإعلانات") : t("تم حفظ مكافآت الإيداع"));
+      setRows(mapRows(data.packages));
+      setNotice(
+        isAds
+          ? t("تم حفظ مكافآت الإعلانات")
+          : isActivation
+            ? t("تم حفظ مكافآت تفعيل VIP")
+            : t("تم حفظ مكافآت الإيداع")
+      );
     } catch (err) {
       setError(err.message);
     } finally {
@@ -2504,11 +2519,13 @@ function AdminVipRewardSettings({ api, setError, setNotice, kind }) {
 
   return (
     <form className="card admin-block" onSubmit={save} style={{ marginTop: 12 }}>
-      <h2>{isAds ? t("مكافآت الإعلانات") : t("مكافآت الإيداع")}</h2>
+      <h2>{isAds ? t("مكافآت الإعلانات") : isActivation ? t("مكافآت تفعيل VIP") : t("مكافآت الإيداع")}</h2>
       <p className="muted">
         {isAds
           ? t("حدد قيمة مكافأة مشاهدة الإعلان لكل مستوى VIP بشكل مستقل. اترك الحقل فارغًا للإبقاء على المكافأة العشوائية الحالية.")
-          : t("حدد مكافأة الإيداع لكل مستوى VIP بشكل مستقل. القيمة الحالية 0 تعني عدم إضافة مكافأة فوق مبلغ الإيداع. تُستخدم القيم الجديدة في الإيداعات الجديدة بعد الحفظ.")}
+          : isActivation
+            ? t("حدد مكافأة تفعيل كل مستوى VIP بشكل مستقل. القيم المعروضة هي الحالية (مثل 10 USDT لـ VIP 1). تسري على طلبات التفعيل الجديدة بعد الحفظ ولا تُعاد حساب المكافآت القديمة.")
+            : t("حدد مكافأة الإيداع لكل مستوى VIP بشكل مستقل. القيمة الحالية 0 تعني عدم إضافة مكافأة فوق مبلغ الإيداع. تُستخدم القيم الجديدة في الإيداعات الجديدة بعد الحفظ.")}
       </p>
       {rows.map((item, index) => (
         <label key={item.level}>
@@ -2517,14 +2534,12 @@ function AdminVipRewardSettings({ api, setError, setNotice, kind }) {
             type="number"
             step="0.01"
             min="0"
-            value={isAds ? item.adReward : item.depositReward}
+            value={item[valueKey]}
             placeholder={isAds ? t("عشوائي") : "0"}
             onChange={(e) => {
               const value = e.target.value;
               setRows((prev) => prev.map((row, rowIndex) => (
-                rowIndex === index
-                  ? { ...row, [isAds ? "adReward" : "depositReward"]: value }
-                  : row
+                rowIndex === index ? { ...row, [valueKey]: value } : row
               )));
             }}
           />
@@ -2532,7 +2547,7 @@ function AdminVipRewardSettings({ api, setError, setNotice, kind }) {
       ))}
       <div className="row">
         <button type="submit" className="primary" disabled={saving}>
-          {isAds ? t("حفظ مكافآت الإعلانات") : t("حفظ مكافآت الإيداع")}
+          {isAds ? t("حفظ مكافآت الإعلانات") : isActivation ? t("حفظ مكافآت تفعيل VIP") : t("حفظ مكافآت الإيداع")}
         </button>
       </div>
     </form>
@@ -2734,6 +2749,7 @@ function Admin({ api, setError, setNotice, initialTab = "vip" }) {
   const [invitePanelOpen, setInvitePanelOpen] = useState(false);
   const [userQuery, setUserQuery] = useState("");
   const [supportQuery, setSupportQuery] = useState("");
+  const [supportStartUserId, setSupportStartUserId] = useState("");
   const [moneyQuery, setMoneyQuery] = useState("");
   const [moneyOpen, setMoneyOpen] = useState(null);
   const [selectedUserId, setSelectedUserId] = useState(null);
@@ -2766,6 +2782,25 @@ function Admin({ api, setError, setNotice, initialTab = "vip" }) {
   }
 
   useEffect(() => { load(); }, []);
+
+  async function openSupportChat(userId) {
+    const id = Number(userId);
+    if (!id) {
+      setError(t("اختر مستخدماً أولاً"));
+      return;
+    }
+    setError("");
+    setNotice("");
+    try {
+      const chat = await api(`/api/admin/support/${id}`);
+      setSupportChat(chat);
+      setSupportStartUserId(String(id));
+      setSupportList(await api("/api/admin/support"));
+      setNotice(t("تم فتح محادثة الدعم"));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
 
   async function act(path) {
     setError("");
@@ -2915,6 +2950,8 @@ function Admin({ api, setError, setNotice, initialTab = "vip" }) {
         </div>
       )}
       {tab === "vip" && (
+        <>
+          <AdminVipRewardSettings api={api} setError={setError} setNotice={setNotice} kind="activation" />
         <div className="card admin-block">
           <h2>{t("طلبات تفعيل VIP")}</h2>
           <div className="admin-reqs">
@@ -2941,6 +2978,7 @@ function Admin({ api, setError, setNotice, initialTab = "vip" }) {
             ))}
           </div>
         </div>
+        </>
       )}
       {tab === "vipCancel" && (
         <div className="card admin-block">
@@ -2976,7 +3014,18 @@ function Admin({ api, setError, setNotice, initialTab = "vip" }) {
       {tab === "support" && (
         <div className="card" style={{ marginTop: 12 }}>
           <h2>{t("محادثات الدعم")}</h2>
-          <label>بحث عن مستخدم</label>
+          <p className="muted">{t("ابحث عن أي مشترك وابدأ محادثة دعم حتى لو لم يراسل الدعم من قبل. المحادثات الحالية تبقى كما هي.")}</p>
+          <AdminUserPicker
+            users={adminUsers}
+            value={supportStartUserId}
+            onChange={(userId) => setSupportStartUserId(userId)}
+          />
+          <div className="row">
+            <button type="button" className="primary" onClick={() => openSupportChat(supportStartUserId)}>
+              {t("بدء محادثة")}
+            </button>
+          </div>
+          <label>{t("محادثات الدعم الحالية")}</label>
           <input type="search" placeholder="الاسم أو البريد أو رقم الملف" value={supportQuery} onChange={(e) => setSupportQuery(e.target.value)} autoComplete="off" />
           <div className="grid">
             <div>
@@ -2987,13 +3036,7 @@ function Admin({ api, setError, setNotice, initialTab = "vip" }) {
                     <div>{item.user?.name || "مستخدم"} · {fileNumber(item.userId || item.user?.id)}</div>
                     <small className="muted">{item.user?.email || ""} · {item.lastMessage || "بدون رسائل"} · {item.messageCount || 0}</small>
                   </div>
-                  <button className="ghost" onClick={async () => {
-                    try {
-                      setSupportChat(await api(`/api/admin/support/${item.userId}`));
-                    } catch (err) {
-                      setError(err.message);
-                    }
-                  }}>فتح</button>
+                  <button className="ghost" onClick={() => openSupportChat(item.userId)}>{t("فتح")}</button>
                 </div>
               ))}
             </div>
@@ -3023,7 +3066,7 @@ function Admin({ api, setError, setNotice, initialTab = "vip" }) {
                   }}>
                     <textarea value={supportText} onChange={(e) => setSupportText(e.target.value)} rows={3} />
                     <input type="file" accept="image/*,video/*" onChange={(e) => setSupportFile(e.target.files?.[0] || null)} />
-                    <div className="row"><button type="submit">رد</button></div>
+                    <div className="row"><button type="submit">{t("إرسال")}</button></div>
                   </form>
                 </>
               )}
